@@ -1,0 +1,3 @@
+/* manifest-only resource, built as default-manifest.o to shadow the
+ * one MinGW links in automatically (ld refuses two manifests). */
+1 24 "mayous.manifest"
