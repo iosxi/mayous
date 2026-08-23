@@ -24,8 +24,6 @@
 #define IDM_ABOUT     1005
 #define IDM_EXIT      1006
 
-#define RUNKEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
-
 volatile LONG g_active = 0;
 
 #ifdef MAYOUS_DEBUG
@@ -404,10 +402,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_QUERYENDSESSION:
         chord_reset();
+        chord_pump();
         return TRUE;
 
     case WM_ENDSESSION:
         chord_reset();
+        chord_pump();
         hook_remove();
         return 0;
 
@@ -558,6 +558,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdLine, int show)
     if (g_winEvent) UnhookWinEvent(g_winEvent);
     hook_remove();
     chord_reset();
+    /* chord_reset() は注入をキューに積むだけなので、ここで必ず吐き出す。
+       忘れると、注入済みの押下を閉じられないままボタンが押しっぱなしになる。 */
+    chord_pump();
     agent_stop();
     tray_remove();
     if (mutex) { ReleaseMutex(mutex); CloseHandle(mutex); }

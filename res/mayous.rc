@@ -29,7 +29,7 @@ BEGIN
       VALUE "InternalName",     "mayous"
       VALUE "OriginalFilename", "mayous.exe"
       VALUE "ProductName",      "Mayous"
-      VALUE "ProductVersion",   "1.0.0.0"
+      VALUE "ProductVersion",   "v1"
       VALUE "Comments",         "Right/left mouse button chords for Windows"
     END
   END

@@ -18,6 +18,7 @@
 #include <wchar.h>
 
 #define WNDCLASS_CAPTURE L"MayousCaptureWnd"
+#define WM_CAP_REFRESH   (WM_APP + 11)   /* 表示更新をフック外へ逃がす */
 
 #define IDC_CAP_OK     1
 #define IDC_CAP_CLEAR  2
@@ -82,9 +83,18 @@ static void build_spec(WCHAR *out, int cch, BOOL includeHeld)
     (void)cch;
 }
 
+/* 低レベルフックの中から直接ウィンドウを触ると、コールバックが伸びて
+   OS にフックを外されかねない。更新要求だけ投げて、実処理は
+   メッセージループ側(WM_CAP_REFRESH)で行う。 */
 static void refresh_view(void)
 {
+    if (g_wnd) PostMessageW(g_wnd, WM_CAP_REFRESH, 0, 0);
+}
+
+static void refresh_view_now(void)
+{
     WCHAR spec[ACTION_SPEC_CCH];
+    if (!g_hView) return;
     build_spec(spec, ARRAYSIZE(spec), TRUE);
     SetWindowTextW(g_hView, spec[0] ? spec : L"(まだ何も記録されていません)");
 }
@@ -181,6 +191,10 @@ static void clear_all(void)
 static LRESULT CALLBACK CaptureProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
+    case WM_CAP_REFRESH:
+        refresh_view_now();
+        return 0;
+
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case IDC_CAP_OK:     g_ok = TRUE;  DestroyWindow(hwnd); break;
@@ -199,9 +213,12 @@ static LRESULT CALLBACK CaptureProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
 
     case WM_DESTROY:
+        /* ここで PostQuitMessage を呼んではいけない。入れ子のループを抜けた後も
+           WM_QUIT がキューに残り、本体のメッセージループがそれを拾って
+           mayous ごと終了してしまう(実際にそうなった)。
+           ループは g_wnd が NULL になったことで抜ける。 */
         if (g_kbHook) { UnhookWindowsHookEx(g_kbHook); g_kbHook = NULL; }
         g_wnd = NULL;
-        PostQuitMessage(0);
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
@@ -297,11 +314,17 @@ BOOL capture_run(HINSTANCE inst, HWND owner, WCHAR *out, int cch)
         return FALSE;
     }
 
-    /* 自前のモーダルループ。記録ウィンドウが閉じるまでここに留まる。 */
-    while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+    /* 自前のモーダルループ。記録ウィンドウが閉じるまでここに留まる。
+       記録中に本体が終了要求を受けた場合は、WM_QUIT を投げ直して
+       外側のループに正しく伝える。 */
+    while (g_wnd) {
+        BOOL r = GetMessageW(&msg, NULL, 0, 0);
+        if (r <= 0) {
+            if (r == 0) PostQuitMessage((int)msg.wParam);
+            break;
+        }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
-        if (!g_wnd) break;
     }
 
     EnableWindow(owner, TRUE);

@@ -19,7 +19,7 @@
 
 static FILE      *g_log;
 static ULONGLONG  g_t0;
-static int        g_bal[3];      /* 0=左 1=右 2=中 の押下収支 */
+static int        g_bal[5];      /* 0=左 1=右 2=中 3=サイド1 4=サイド2 の押下収支 */
 
 static void logline(const char *fmt, ...)
 {
@@ -37,10 +37,10 @@ static void logline(const char *fmt, ...)
 static void button(const char *name, int idx, int down, LPARAM lp)
 {
     g_bal[idx] += down ? 1 : -1;
-    logline("%-8s %-4s at(%4d,%4d)  balance L=%d R=%d M=%d%s",
+    logline("%-9s %-4s at(%4d,%4d)  balance L=%d R=%d M=%d X1=%d X2=%d%s",
             name, down ? "DOWN" : "UP",
             (int)(short)LOWORD(lp), (int)(short)HIWORD(lp),
-            g_bal[0], g_bal[1], g_bal[2],
+            g_bal[0], g_bal[1], g_bal[2], g_bal[3], g_bal[4],
             (g_bal[idx] < 0 || g_bal[idx] > 1) ? "   <<< IMBALANCE" : "");
 }
 
@@ -62,6 +62,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_MOUSEWHEEL:    logline("WHEEL_V  %+d", GET_WHEEL_DELTA_WPARAM(wp)); return 0;
     case WM_MOUSEHWHEEL:   logline("WHEEL_H  %+d", GET_WHEEL_DELTA_WPARAM(wp)); return 0;
+
+    /* サイドボタン。どちらかは wParam の上位ワードで分かる。 */
+    case WM_XBUTTONDOWN:
+    case WM_XBUTTONDBLCLK:
+        button(HIWORD(wp) == XBUTTON2 ? "SIDE2" : "SIDE1",
+               HIWORD(wp) == XBUTTON2 ? 4 : 3, 1, lp);
+        return TRUE;
+    case WM_XBUTTONUP:
+        button(HIWORD(wp) == XBUTTON2 ? "SIDE2" : "SIDE1",
+               HIWORD(wp) == XBUTTON2 ? 4 : 3, 0, lp);
+        return TRUE;
 
     case WM_CONTEXTMENU:   logline("CONTEXTMENU");      return 0;
 
@@ -124,7 +135,8 @@ int main(int argc, char **argv)
         DispatchMessageW(&msg);
     }
 
-    logline("target done  final balance L=%d R=%d M=%d", g_bal[0], g_bal[1], g_bal[2]);
+    logline("target done  final balance L=%d R=%d M=%d X1=%d X2=%d",
+            g_bal[0], g_bal[1], g_bal[2], g_bal[3], g_bal[4]);
     fclose(g_log);
     return 0;
 }

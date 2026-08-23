@@ -563,8 +563,7 @@ static LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_NOTIFY: {
         const NMHDR *nh = (const NMHDR *)lp;
         if (nh->idFrom == IDC_TAB && nh->code == (UINT)TCN_SELCHANGE)
-            if (!GetEnvironmentVariableW(L"MAYOUS_NO_SHOWTAB", NULL, 0))
-                show_tab(TabCtrl_GetCurSel(g_tab));
+            show_tab(TabCtrl_GetCurSel(g_tab));
         return 0;
     }
 

@@ -26,16 +26,28 @@ static void lnk_path(WCHAR *out, int cch)
     lstrcatW(out, L"\\" MAYOUS_APPNAME L".lnk");
 }
 
-/* 昔のバージョンが残したレジストリ登録を消す */
+/* 昔のバージョンが残したレジストリ登録を消す。
+ *
+ *  Mayous がレジストリに触れるのはここだけで、しかも「自分が作った値を消す」
+ *  方向にしか働かない。値が無い普通の環境では読み取りすら発生しないよう、
+ *  まず読み取り専用で開いて存在を確かめ、実在するときだけ書き込み権限で開き直す。 */
 void startup_cleanup_legacy(void)
 {
     HKEY k;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, OLD_RUNKEY, 0, KEY_SET_VALUE | KEY_QUERY_VALUE, &k)
-        != ERROR_SUCCESS)
+
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, OLD_RUNKEY, 0, KEY_QUERY_VALUE, &k) != ERROR_SUCCESS)
         return;
-    if (RegQueryValueExW(k, MAYOUS_APPNAME, NULL, NULL, NULL, NULL) == ERROR_SUCCESS)
+    {
+        LONG found = RegQueryValueExW(k, MAYOUS_APPNAME, NULL, NULL, NULL, NULL);
+        RegCloseKey(k);
+        if (found != ERROR_SUCCESS) return;      /* 何も無い = ここで終わり */
+    }
+
+    /* 実在したときだけ、書き込み権限で開き直して消す */
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, OLD_RUNKEY, 0, KEY_SET_VALUE, &k) == ERROR_SUCCESS) {
         RegDeleteValueW(k, MAYOUS_APPNAME);
-    RegCloseKey(k);
+        RegCloseKey(k);
+    }
 }
 
 BOOL startup_enabled(void)
