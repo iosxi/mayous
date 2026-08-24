@@ -13,7 +13,8 @@ src/config.c     mayous.ini の読み書きとキーコンボ解析
 src/agent.c      ホイール注入専用の子プロセス
 src/settings.c   設定ウィンドウ（コントロールを直接生成）
 src/capture.c    キー入力の記録
-src/startup.c    スタートアップフォルダのショートカット
+src/theme.c      システムのライト/ダークに合わせた配色
+src/legacy.c     昔のバージョンが残したレジストリ登録の掃除
 res/             アイコン、マニフェスト、バージョン情報
 tools/           アイコン生成、テストハーネス
                  probe.c   … フック鎖に入って観測する
@@ -150,18 +151,47 @@ Windows は **`WH_MOUSE_LL` を保持しているプロセスからのホイー�
 `TCITEM` の `iImage` は `-1` にすること。`0` のままだとイメージリストを設定して
 いなくても画像 0 を取りに行き、環境によっては選択タブの描き直しで落ちます。
 
+### 6. ダークモードは非公開 API に頼るしかない
+
+Win32 の古いコントロールにはダークモードの公式 API がありません。Windows 自身も
+uxtheme.dll の**序数エクスポート**（名前が無く番号でしか呼べない関数）を使っています。
+`theme.c` も同じ方法ですが、非公開である以上いつ消えてもおかしくないので、
+取得できなければ黙ってライトのまま動くようにしてあります。
+
+```
+序数 104  RefreshImmersiveColorPolicyState()
+序数 132  ShouldAppsUseDarkMode() -> BYTE
+序数 133  AllowDarkModeForWindow(HWND, BYTE)
+序数 135  1809: AllowDarkModeForApp(BYTE) / 1903+: SetPreferredAppMode(int)
+```
+
+戻り値が 1 バイトの `bool` なので、`BOOL`(int) で受けると上位バイトのゴミを拾います。
+`BYTE` で受けること。
+
+コントロールの描画は `SetWindowTheme()` でテーマ名を差し替えて任せます
+（`"DarkMode_Explorer"`、エディットとコンボは `"DarkMode_CFD"`）。
+テーマが効かないグループ枠とタブは所有者描画にしています。タブは「中身の面」の
+背景も塗ってくれないので、サブクラス化して `WM_ERASEBKGND` を差し替えています。
+タイトルバーだけは公式 API（`DwmSetWindowAttribute`）があります。
+
 ---
 
 ## レジストリを使わない実装
 
 設定は `mayous.ini`（`GetPrivateProfile*` / `WritePrivateProfile*`、常に絶対パス指定）。
-自動起動はスタートアップフォルダの `.lnk` を `IShellLink` + `IPersistFile` で作成
-（`startup.c`）。COM の `CoInitializeEx` は戻り値を見て、既に初期化済みなら
-`CoUninitialize` しないようにしています。
+**置き場所は exe と同じフォルダに固定**で、書けない場所にあっても `%APPDATA%` へは
+逃がしません。逃がすと「設定がどこにあるか分からない」「フォルダを消しても設定が残る」
+という、ポータブル運用で一番困る状態になるためです。書けない場合は起動時に知らせます。
 
-レジストリに触れるのは `startup_cleanup_legacy()` 一箇所だけで、旧バージョンが
+自動起動の登録は**行いません**。スタートアップに入れるかどうかは使う人が決めることで、
+アプリ側から勝手に登録するのは余計な世話だという判断です。
+
+レジストリに触れるのは `startup_cleanup_legacy()`（`legacy.c`）一箇所だけで、旧バージョンが
 `HKCU\...\Run` に書いた値を**削除する方向にしか働きません**。値が無い環境では
 読み取り専用で開いて存在を確認して終わりです。
+
+ダーク判定も、まず uxtheme の `ShouldAppsUseDarkMode()` に聞き、それが取れないときだけ
+`Personalize\AppsUseLightTheme` を**読むだけ**です。
 
 `tools\test_no_registry.ps1` が、一通りの操作の前後で HKCU のスナップショットを
 比較して変化がないことを検証します。
@@ -222,7 +252,7 @@ powershell -ExecutionPolicy Bypass -File tools\stress.ps1
 | `tools\test_side.ps1` | サイドボタンの同時押し・単独差し替え |
 | `tools\test_capture.ps1` | キー記録と保存 |
 | `tools\test_settings.ps1` | 設定の保存と即時反映 |
-| `tools\test_startup.ps1` | 自動起動（ショートカット方式） |
+| `tools\test_ui_behavior.ps1` | 二重起動時の挙動と [適用] の活性制御 |
 | `tools\test_no_registry.ps1` | レジストリを汚さないことの検証 |
 | `tools\shot_settings.ps1` | 設定画面のキャプチャ（目視確認用） |
 
@@ -243,6 +273,16 @@ powershell -ExecutionPolicy Bypass -File tools\stress.ps1
 > 別プロセスのウィンドウに `SetForegroundWindow` しても効かないことがあり、
 > その場合**最初のクリックはウィンドウのアクティブ化に消費されます**。
 > 状態が変わるまで押し直す作りにしてください。
+
+> **計測用の PowerShell は必ず DPI 対応にしてください。** DPI 非対応のままだと
+> `GetWindowRect` が仮想化された座標（125% 環境なら実寸の 0.8 倍）を返し、
+> 画面キャプチャのビットマップが小さすぎて右下が欠けます。「レイアウトがはみ出して
+> いる」という実在しない不具合を追いかける羽目になります。`tools\uilib.ps1` は
+> 読み込み時に `SetProcessDpiAwarenessContext` を呼んでいます。
+
+> `PrintWindow`(PW_RENDERFULLCONTENT) は、ウィンドウによっては下半分が描かれない
+> ことがあります（実際にライトテーマで起きました）。おかしいと思ったら
+> `tools\shot_screen.ps1`（実画面からの切り出し）と見比べてください。
 
 ---
 

@@ -10,7 +10,6 @@
  */
 
 #include "common.h"
-#include <shlobj.h>
 #include <wchar.h>
 #include <stdlib.h>
 
@@ -260,8 +259,9 @@ const WCHAR *cfg_hold_ini_key(int btn)
 static const WCHAR *chord_default(int pfx, int suf)
 {
     if (pfx == BTN_R && suf == SUF_L)   return L"win";
-    if (pfx == BTN_R && suf == SUF_WUP) return L"hwheel_right";
-    if (pfx == BTN_R && suf == SUF_WDN) return L"hwheel_left";
+    /* ホイールを手前に回す(下) = 右へ。紙をめくる向きに合わせている。 */
+    if (pfx == BTN_R && suf == SUF_WDN) return L"hwheel_right";
+    if (pfx == BTN_R && suf == SUF_WUP) return L"hwheel_left";
     if (pfx == BTN_L && suf == SUF_R)   return L"alttab";
     return L"none";
 }
@@ -280,36 +280,39 @@ static void exe_dir(WCHAR *out, size_t cch)
     if (p) *(p + 1) = 0;
 }
 
+/* 設定は必ず exe と同じフォルダに置く。
+   書けない場所(Program Files 等)に置かれた場合でも %APPDATA% へは逃がさない。
+   逃がすと「設定がどこにあるか分からない」「フォルダを消しても設定が残る」
+   という、ポータブル運用で一番困る状態になるため。
+   その場合は起動時に一度だけ知らせて、既定値のまま動く。 */
 void cfg_resolve_path(void)
 {
-    WCHAR dir[MAX_PATH], probe[MAX_PATH];
-    HANDLE h;
+    WCHAR dir[MAX_PATH];
 
     exe_dir(dir, ARRAYSIZE(dir));
-    lstrcpynW(probe, dir, ARRAYSIZE(probe));
-    lstrcatW(probe, L"mayous.ini");
+    lstrcpynW(g_cfg.iniPath, dir, MAX_PATH);
+    lstrcatW(g_cfg.iniPath, L"mayous.ini");
+}
 
-    if (GetFileAttributesW(probe) != INVALID_FILE_ATTRIBUTES) {
-        lstrcpynW(g_cfg.iniPath, probe, MAX_PATH);
-        return;
+/* 設定ファイルを実際に書けるか。書けなければ FALSE。 */
+BOOL cfg_path_writable(void)
+{
+    HANDLE h;
+
+    if (GetFileAttributesW(g_cfg.iniPath) != INVALID_FILE_ATTRIBUTES) {
+        h = CreateFileW(g_cfg.iniPath, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h == INVALID_HANDLE_VALUE) return FALSE;
+        CloseHandle(h);
+        return TRUE;
     }
     /* 実際に作れるか試す(UAC の仮想化に騙されないよう実書き込みで判定) */
-    h = CreateFileW(probe, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_NEW,
+    h = CreateFileW(g_cfg.iniPath, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_NEW,
                     FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h != INVALID_HANDLE_VALUE) {
-        CloseHandle(h);
-        DeleteFileW(probe);
-        lstrcpynW(g_cfg.iniPath, probe, MAX_PATH);
-        return;
-    }
-    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, dir))) {
-        lstrcatW(dir, L"\\Mayous");
-        CreateDirectoryW(dir, NULL);
-        lstrcatW(dir, L"\\mayous.ini");
-        lstrcpynW(g_cfg.iniPath, dir, MAX_PATH);
-    } else {
-        lstrcpynW(g_cfg.iniPath, probe, MAX_PATH);
-    }
+    if (h == INVALID_HANDLE_VALUE) return FALSE;
+    CloseHandle(h);
+    DeleteFileW(g_cfg.iniPath);
+    return TRUE;
 }
 
 static const WCHAR *kDefaultIni =
@@ -335,6 +338,9 @@ L"\r\n"
 L"; フルスクリーンのアプリが前面のあいだは自動で停止する(ゲーム対策)\r\n"
 L"SuspendOnFullscreen=1\r\n"
 L"\r\n"
+L"; 設定画面の配色: system(Windows の設定に従う) / light / dark\r\n"
+L"Theme=system\r\n"
+L"\r\n"
 L"[Chords]\r\n"
 L"; 書ける値:\r\n"
 L";   none                        何もしない(そのボタンを一切乗っ取らない)\r\n"
@@ -350,8 +356,8 @@ L";         browserback browserfwd ほか\r\n"
 L"; 修飾子: ctrl alt shift win\r\n"
 L"\r\n"
 L"RightThenLeft=win\r\n"
-L"RightThenWheelUp=hwheel_right\r\n"
-L"RightThenWheelDown=hwheel_left\r\n"
+L"RightThenWheelDown=hwheel_right\r\n"
+L"RightThenWheelUp=hwheel_left\r\n"
 L"LeftThenRight=alttab\r\n"
 L"\r\n"
 L"; 書かれていない組み合わせは none です。設定ウィンドウから編集するのが簡単です。\r\n"
@@ -409,6 +415,15 @@ void cfg_load(void)
     g_cfg.enabled             = GetPrivateProfileIntW(L"General", L"Enabled", 1, g_cfg.iniPath) != 0;
     g_cfg.dragThreshold       = GetPrivateProfileIntW(L"General", L"DragThreshold", 0, g_cfg.iniPath);
     g_cfg.suspendOnFullscreen = GetPrivateProfileIntW(L"General", L"SuspendOnFullscreen", 1, g_cfg.iniPath) != 0;
+
+    {   /* 設定画面の配色: system / light / dark */
+        WCHAR t[32];
+        GetPrivateProfileStringW(L"General", L"Theme", L"system", t, ARRAYSIZE(t), g_cfg.iniPath);
+        str_trim(t); str_lower(t);
+        g_cfg.theme = !wcscmp(t, L"light") ? THEME_LIGHT
+                    : !wcscmp(t, L"dark")  ? THEME_DARK
+                    : THEME_SYSTEM;
+    }
 
     if (g_cfg.dragThreshold < 0)   g_cfg.dragThreshold = 0;
     if (g_cfg.dragThreshold > 200) g_cfg.dragThreshold = 200;

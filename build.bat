@@ -50,7 +50,7 @@ rem --- program ----------------------------------------------------------
 echo [3/3] compiling and linking...
 
 set "CFLAGS=-municode -DUNICODE -D_UNICODE -Wall -Wextra -std=gnu11"
-set "LIBS=-luser32 -lgdi32 -lshell32 -ladvapi32 -lcomctl32 -lole32 -luuid"
+set "LIBS=-luser32 -lgdi32 -lshell32 -ladvapi32 -lcomctl32 -ldwmapi -luxtheme"
 
 if /i "%MODE%"=="debug" (
     set "CFLAGS=!CFLAGS! -g -O0 -DMAYOUS_DEBUG"
@@ -66,7 +66,7 @@ if /i "%MODE%"=="debug" (
 gcc -B "%OUT%/" !CFLAGS! !LINKFLAGS! ^
     "%ROOT%src\main.c" "%ROOT%src\chord.c" "%ROOT%src\config.c" ^
     "%ROOT%src\agent.c" "%ROOT%src\settings.c" ^
-    "%ROOT%src\capture.c" "%ROOT%src\startup.c" ^
+    "%ROOT%src\capture.c" "%ROOT%src\legacy.c" "%ROOT%src\theme.c" ^
     "%OUT%\mayous.res" -o "!EXE!" !LIBS!
 if errorlevel 1 exit /b 1
 

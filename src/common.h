@@ -14,7 +14,7 @@
 #include <windows.h>
 
 #define MAYOUS_APPNAME      L"Mayous"
-#define MAYOUS_VERSION      L"v1"
+#define MAYOUS_VERSION      L"v2"
 #define MAYOUS_WNDCLASS     L"MayousHiddenWnd"
 #define MAYOUS_AGENT_CLASS  L"MayousWheelAgentWnd"
 #define MAYOUS_MUTEX        L"Local\\MayousSingleInstance_{7A1C4E2B-9D3F-4A55-8C10-2E6B0F9D4A31}"
@@ -81,6 +81,10 @@ typedef struct {
     WCHAR      spec[ACTION_SPEC_CCH];   /* 元の設定文字列(表示・保存用) */
 } Action;
 
+/* ---------------- 外観 ---------------- */
+
+typedef enum { THEME_SYSTEM = 0, THEME_LIGHT, THEME_DARK } ThemeMode;
+
 /* ---------------- 設定 ---------------- */
 
 #define MAX_EXCLUDE 2048
@@ -90,6 +94,7 @@ typedef struct {
     int    dragThreshold;              /* px, 0 = システム値(SM_CXDRAG)を使う */
     int    holdTimeoutMs[BTN_COUNT];   /* 0 = 無効(離すまで保留し続ける)     */
     BOOL   suspendOnFullscreen;
+    ThemeMode theme;                   /* 設定画面の配色 */
     Action chord[CH_COUNT];
     Action single[BTN_COUNT];          /* 単独クリックの置き換え(サイドボタン用) */
     /* ";notepad.exe;game.exe;" 形式の小文字化済み除外リスト */
@@ -101,6 +106,7 @@ extern Config g_cfg;
 
 /* config.c */
 void  cfg_resolve_path(void);
+BOOL  cfg_path_writable(void);
 void  cfg_load(void);
 BOOL  cfg_write_default_if_missing(void);
 BOOL  cfg_is_excluded(const WCHAR *exeName);
@@ -136,11 +142,26 @@ void  settings_open(HINSTANCE inst, HWND owner);
 HWND  settings_hwnd(void);
 void  settings_apply_callback(void);   /* main.c が実装。保存直後の再読み込み */
 
-/* startup.c - スタートアップフォルダのショートカットで自動起動 */
-BOOL  startup_enabled(void);
-void  startup_set(BOOL on);
+/* theme.c - システムのライト/ダークに合わせた配色 */
+void     theme_init(void);
+BOOL     theme_refresh(void);          /* 変わっていたら TRUE */
+BOOL     theme_is_dark(void);
+COLORREF theme_back(void);
+COLORREF theme_ctrl_back(void);
+COLORREF theme_text(void);
+COLORREF theme_dim_text(void);
+COLORREF theme_line(void);
+COLORREF theme_hot(void);
+HBRUSH   theme_back_brush(void);
+HBRUSH   theme_ctrl_brush(void);
+void     theme_apply_window(HWND hwnd);
+void     theme_apply_control(HWND ctl, const WCHAR *cls);
+BOOL     theme_ctlcolor(UINT msg, HDC dc, HBRUSH *br);
+void     theme_draw_group(const DRAWITEMSTRUCT *di, HFONT font);
+void     theme_draw_tab(const DRAWITEMSTRUCT *di, HFONT font);
+
+/* legacy.c - 昔のバージョンが残したレジストリ登録の掃除 */
 void  startup_cleanup_legacy(void);
-void  startup_folder(WCHAR *out, int cch);
 
 /* capture.c - キー入力の記録 */
 BOOL  capture_run(HINSTANCE inst, HWND owner, WCHAR *out, int cch);

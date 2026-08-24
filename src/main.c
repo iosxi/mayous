@@ -20,7 +20,6 @@
 #define IDM_ENABLE    1001
 #define IDM_OPENINI   1002
 #define IDM_RELOAD    1003
-#define IDM_STARTUP   1004
 #define IDM_ABOUT     1005
 #define IDM_EXIT      1006
 
@@ -57,7 +56,7 @@ static NOTIFYICONDATAW g_nid;
 static BOOL           g_suspended;
 static WCHAR          g_suspendedBy[MAX_PATH];
 static UINT           g_msgTaskbarCreated;
-static UINT           g_msgShowInfo;
+static UINT           g_msgShowSettings;
 static HICON          g_iconOn, g_iconOff;
 
 /* ================================================================== */
@@ -260,8 +259,6 @@ static void show_menu(void)
     AppendMenuW(m, MF_STRING, IDM_SETTINGS, L"設定(&S)...");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING | (g_cfg.enabled ? MF_CHECKED : 0), IDM_ENABLE, L"有効(&E)");
-    AppendMenuW(m, MF_STRING | (startup_enabled() ? MF_CHECKED : 0), IDM_STARTUP,
-                L"Windows 起動時に実行(&U)");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING, IDM_OPENINI, L"設定ファイルを開く(&O)");
     AppendMenuW(m, MF_STRING, IDM_RELOAD,  L"設定を再読み込み(&R)");
@@ -280,16 +277,15 @@ static void show_menu(void)
 
 static void show_about(void)
 {
-    WCHAR msg[1024], folder[MAX_PATH];
+    WCHAR msg[1024];
 
-    startup_folder(folder, MAX_PATH);
     wsprintfW(msg,
         L"%s %s\r\n\r\n"
         L"マウスの同時押しをショートカットに変える常駐ツール\r\n\r\n"
         L"設定ファイル:\r\n  %s\r\n\r\n"
-        L"スタートアップ:\r\n  %s\r\n\r\n"
+        L"レジストリは使用しません。\r\n"
         L"割り当ての編集は [設定...] から行えます。",
-        MAYOUS_APPNAME, MAYOUS_VERSION, g_cfg.iniPath, folder);
+        MAYOUS_APPNAME, MAYOUS_VERSION, g_cfg.iniPath);
     MessageBoxW(NULL, msg, MAYOUS_APPNAME, MB_OK | MB_ICONINFORMATION);
 }
 
@@ -323,8 +319,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         tray_update();
         return 0;
     }
-    if (msg == g_msgShowInfo) {         /* 二重起動された */
-        tray_balloon(MAYOUS_APPNAME, L"すでに常駐しています。");
+    if (msg == g_msgShowSettings) {
+        /* 二重起動された。警告を出すより、設定画面を出したほうが親切。
+           もう一度 exe をダブルクリックした人は、たいてい設定を触りたい。 */
+        settings_open(g_inst, hwnd);
         return 0;
     }
 
@@ -368,10 +366,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case IDM_RELOAD:
             reload_config();
             tray_balloon(MAYOUS_APPNAME, L"設定を再読み込みしました。");
-            break;
-
-        case IDM_STARTUP:
-            startup_set(!startup_enabled());
             break;
 
         case IDM_ABOUT:
@@ -463,7 +457,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdLine, int show)
     }
 
     g_msgTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
-    g_msgShowInfo       = RegisterWindowMessageW(L"MayousShowInfo");
+    g_msgShowSettings   = RegisterWindowMessageW(L"MayousShowSettings");
 
     /* 既存インスタンスへの終了指示(アンインストールや入れ替え用) */
     if (cmdline_has(cmdLine, L"exit")) {
@@ -475,12 +469,27 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdLine, int show)
     /* 二重起動の抑止 */
     mutex = CreateMutexW(NULL, TRUE, MAYOUS_MUTEX);
     if (!mutex || GetLastError() == ERROR_ALREADY_EXISTS) {
-        PostMessageW(HWND_BROADCAST, g_msgShowInfo, 0, 0);
+        /* 常駐済み。こちらは前面に出る権利を持っているので、それを譲ってから
+           頼まないと、既存インスタンスが設定画面を前面に出せない。 */
+        AllowSetForegroundWindow(ASFW_ANY);
+        PostMessageW(HWND_BROADCAST, g_msgShowSettings, 0, 0);
         if (mutex) CloseHandle(mutex);
         return 0;
     }
 
     cfg_resolve_path();
+    if (!cfg_path_writable()) {
+        WCHAR msg[MAX_PATH + 256];
+        wsprintfW(msg,
+            L"設定ファイルを書き込めません:\r\n  %s\r\n\r\n"
+            L"設定は必ず exe と同じフォルダに保存する方針のため、"
+            L"別の場所には逃がしません。\r\n"
+            L"書き込めるフォルダ(デスクトップや自分のドキュメントの下など)へ "
+            L"mayous.exe を移してから起動し直してください。\r\n\r\n"
+            L"このまま続けると、既定の割り当てでは動きますが設定は保存されません。",
+            g_cfg.iniPath);
+        MessageBoxW(NULL, msg, MAYOUS_APPNAME, MB_OK | MB_ICONWARNING);
+    }
     firstRun = cfg_write_default_if_missing();
     cfg_load();
     startup_cleanup_legacy();   /* 旧バージョンが残した Run キーを掃除 */

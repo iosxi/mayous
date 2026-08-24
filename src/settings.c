@@ -31,7 +31,6 @@
 #define IDC_SINGLE_BASE  2200            /* +btn */
 #define IDC_SREC_BASE    2210            /* +btn */
 #define IDC_ENABLED      1100
-#define IDC_STARTUP      1101
 #define IDC_FULLSCREEN   1102
 #define IDC_HOLD_BASE    1110            /* +btn */
 #define IDC_DRAG         1119
@@ -40,6 +39,7 @@
 #define IDC_CANCEL       1131
 #define IDC_APPLY        1132
 #define IDC_OPENINI      1133
+#define IDC_GROUP         950   /* グループ枠(ダーク時は所有者描画) */
 
 /* ------------------------------------------------------------------ */
 /* 一覧から選べる機能                                                  */
@@ -55,6 +55,7 @@ static const Preset kPresets[] = {
     { L"Windows キー (スタート)",           L"win" },
     { L"Alt+Tab  次のウィンドウ",           L"alttab" },
     { L"Alt+Shift+Tab  前のウィンドウ",     L"alttab_back" },
+    { L"Alt+Esc  ウィンドウを順に切り替え", L"alt+esc" },
     { L"タスクビュー (Win+Tab)",            L"win+tab" },
     { L"デスクトップを表示 (Win+D)",        L"win+d" },
     { L"ウィンドウを閉じる (Alt+F4)",       L"alt+f4" },
@@ -116,7 +117,18 @@ static int    g_unit = 16;               /* レイアウトの基準 = フォン
 static HWND   g_lbl[CH_COUNT], g_cmb[CH_COUNT], g_rec[CH_COUNT];
 static HWND   g_slbl[BTN_COUNT], g_scmb[BTN_COUNT], g_srec[BTN_COUNT];
 static HWND   g_hHold[BTN_COUNT];
-static HWND   g_hDrag, g_hExclude;
+static HWND   g_hDrag, g_hExclude, g_hApply;
+
+/* 未保存の変更があるか。[適用] の活性はこれに従う。 */
+static BOOL   g_dirty;
+
+static void rebuild(HWND hwnd);
+
+static void set_dirty(BOOL dirty)
+{
+    g_dirty = dirty;
+    if (g_hApply) EnableWindow(g_hApply, dirty);
+}
 
 /* タブの並び。中ボタンはプレフィクスになれないので入らない。 */
 static const int kTabPfx[] = { BTN_L, BTN_R, BTN_X1, BTN_X2 };
@@ -161,7 +173,10 @@ static HWND mk(HWND parent, const WCHAR *cls, const WCHAR *text, DWORD style,
     HWND c = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style,
                              U(x), U(y), U(w), U(h), parent,
                              (HMENU)(INT_PTR)id, g_inst, NULL);
-    if (c) SendMessageW(c, WM_SETFONT, (WPARAM)g_font, TRUE);
+    if (c) {
+        SendMessageW(c, WM_SETFONT, (WPARAM)g_font, TRUE);
+        theme_apply_control(c, cls);
+    }
     return c;
 }
 
@@ -249,7 +264,6 @@ static void load_values(void)
 
     CheckDlgButton(g_wnd, IDC_ENABLED,    g_cfg.enabled             ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(g_wnd, IDC_FULLSCREEN, g_cfg.suspendOnFullscreen ? BST_CHECKED : BST_UNCHECKED);
-    CheckDlgButton(g_wnd, IDC_STARTUP,    startup_enabled()         ? BST_CHECKED : BST_UNCHECKED);
 
     for (b = 0; b < BTN_COUNT; ++b)
         if (g_hHold[b]) SetDlgItemInt(g_wnd, IDC_HOLD_BASE + b, (UINT)g_cfg.holdTimeoutMs[b], FALSE);
@@ -266,6 +280,10 @@ static void load_values(void)
     }
     *dst = 0;
     SetWindowTextW(g_hExclude, buf);
+
+    /* ここまでの SetWindowText で EDIT が EN_CHANGE を投げてくるので、
+       読み込みの最後に必ず「変更なし」へ戻す。 */
+    set_dirty(FALSE);
 }
 
 /* 1 つのコンボの内容を検証して ini へ書く */
@@ -347,8 +365,6 @@ static BOOL save_values(void)
     *dst = 0;
     cfg_write_str(L"Exclude", L"Processes", list);
 
-    startup_set(IsDlgButtonChecked(g_wnd, IDC_STARTUP) == BST_CHECKED);
-
     settings_apply_callback();      /* main.c 側で読み直して即座に反映させる */
     return TRUE;
 }
@@ -367,7 +383,7 @@ static BOOL save_values(void)
 #define TAB_ROWS  7
 #define TAB_H     (32 + TAB_ROWS * ROW_H + 12)
 /* 動作: 上余白22 + チェック3行(22*3) + 長押し2行(26*2) + 距離1行(26) + 下余白10 */
-#define GRP2_H    (22 + 22 * 3 + 26 * 3 + 10)
+#define GRP2_H    (22 + 22 * 2 + 26 * 3 + 10)
 #define GRP3_H     82
 
 static void add_row(HWND hwnd, const WCHAR *label, int y,
@@ -387,6 +403,32 @@ static void add_row(HWND hwnd, const WCHAR *label, int y,
               x + LBL_W + 6 + CMB_W + 6, y, REC_W, 22, recId);
 }
 
+/* グループ枠。ダークのときはテーマが効かないので SS_OWNERDRAW にして自分で描く。 */
+static void mk_group(HWND hwnd, const WCHAR *title, int x, int y, int w, int h)
+{
+    if (theme_is_dark())
+        mk(hwnd, L"STATIC", title, SS_OWNERDRAW, x, y, w, h, IDC_GROUP);
+    else
+        mk(hwnd, L"BUTTON", title, BS_GROUPBOX, x, y, w, h, 0);
+}
+
+/* タブは「中身の面」の背景を自分で塗ってくれないので、ダークでは
+   サブクラス化して WM_ERASEBKGND を差し替える。 */
+static LRESULT CALLBACK TabSubclass(HWND h, UINT msg, WPARAM wp, LPARAM lp,
+                                    UINT_PTR id, DWORD_PTR ref)
+{
+    (void)id; (void)ref;
+    if (msg == WM_ERASEBKGND) {
+        RECT r;
+        GetClientRect(h, &r);
+        FillRect((HDC)wp, &r, theme_ctrl_brush());
+        return 1;
+    }
+    if (msg == WM_NCDESTROY)
+        RemoveWindowSubclass(h, TabSubclass, id);
+    return DefSubclassProc(h, msg, wp, lp);
+}
+
 static void build(HWND hwnd)
 {
     const int m  = 12;
@@ -396,10 +438,14 @@ static void build(HWND hwnd)
 
     /* --- タブ --- */
     g_tab = CreateWindowExW(0, WC_TABCONTROLW, L"",
-                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS,
+                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS |
+                            (theme_is_dark() ? TCS_OWNERDRAWFIXED : 0),
                             U(m), U(m), U(gw), U(TAB_H), hwnd,
                             (HMENU)(INT_PTR)IDC_TAB, g_inst, NULL);
     SendMessageW(g_tab, WM_SETFONT, (WPARAM)g_font, TRUE);
+    theme_apply_control(g_tab, WC_TABCONTROLW);
+    if (theme_is_dark())
+        SetWindowSubclass(g_tab, TabSubclass, 1, 0);
 
     /* iImage は必ず -1 にすること。0 のままだとイメージリストを設定していなくても
        画像 0 を取りに行き、選択タブの描き直しでアクセス違反になる。 */
@@ -437,13 +483,10 @@ static void build(HWND hwnd)
     gy = m + TAB_H + 10;
 
     /* --- 動作 --- */
-    mk(hwnd, L"BUTTON", L" 動作 ", BS_GROUPBOX, m, gy, gw, GRP2_H, 0);
+    mk_group(hwnd, L" 動作 ", m, gy, gw, GRP2_H);
     y = gy + 22;
     mk(hwnd, L"BUTTON", L"有効にする", BS_AUTOCHECKBOX | WS_TABSTOP,
        m + 14, y, gw - 28, 20, IDC_ENABLED);
-    y += 22;
-    mk(hwnd, L"BUTTON", L"Windows 起動時に開始する (スタートアップにショートカットを作成)",
-       BS_AUTOCHECKBOX | WS_TABSTOP, m + 14, y, gw - 28, 20, IDC_STARTUP);
     y += 22;
     mk(hwnd, L"BUTTON", L"フルスクリーンのアプリが前面のときは停止する",
        BS_AUTOCHECKBOX | WS_TABSTOP, m + 14, y, gw - 28, 20, IDC_FULLSCREEN);
@@ -476,8 +519,7 @@ static void build(HWND hwnd)
     gy += GRP2_H + 10;
 
     /* --- 除外アプリ --- */
-    mk(hwnd, L"BUTTON", L" このアプリが前面のときは停止する ", BS_GROUPBOX,
-       m, gy, gw, GRP3_H, 0);
+    mk_group(hwnd, L" このアプリが前面のときは停止する ", m, gy, gw, GRP3_H);
     mk(hwnd, L"STATIC", L"実行ファイル名を 1 行に 1 つ (例: valorant.exe)",
        SS_LEFT, m + 14, gy + 20, gw - 28, 18, 0);
     g_hExclude = mk(hwnd, L"EDIT", L"",
@@ -497,8 +539,9 @@ static void build(HWND hwnd)
        WIN_W - m - 92 * 3 - 16, gy, 92, 26, IDC_OK);
     mk(hwnd, L"BUTTON", L"キャンセル", BS_PUSHBUTTON | WS_TABSTOP,
        WIN_W - m - 92 * 2 - 8, gy, 92, 26, IDC_CANCEL);
-    mk(hwnd, L"BUTTON", L"適用", BS_PUSHBUTTON | WS_TABSTOP,
-       WIN_W - m - 92, gy, 92, 26, IDC_APPLY);
+    g_hApply = mk(hwnd, L"BUTTON", L"適用", BS_PUSHBUTTON | WS_TABSTOP,
+                  WIN_W - m - 92, gy, 92, 26, IDC_APPLY);
+    EnableWindow(g_hApply, FALSE);      /* 変更があるまで押せない */
     gy += 26 + m;
 
     /* クライアント領域をぴったりに合わせる */
@@ -522,6 +565,7 @@ static void rebuild(HWND hwnd)
     ZeroMemory(g_cmb,  sizeof(g_cmb));
     ZeroMemory(g_scmb, sizeof(g_scmb));
     ZeroMemory(g_hHold, sizeof(g_hHold));
+    g_hApply = NULL;
     make_font();
     build(hwnd);
     load_values();
@@ -552,8 +596,10 @@ static void do_capture(HWND combo)
 {
     WCHAR spec[ACTION_SPEC_CCH];
     if (!combo) return;
-    if (capture_run(g_inst, g_wnd, spec, ARRAYSIZE(spec)))
+    if (capture_run(g_inst, g_wnd, spec, ARRAYSIZE(spec))) {
         set_combo_text(combo, spec);
+        set_dirty(TRUE);      /* 記録による書き換えは通知が飛ばないので自分で */
+    }
     SetFocus(combo);
 }
 
@@ -568,7 +614,8 @@ static LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
 
     case WM_COMMAND: {
-        int id = LOWORD(wp);
+        int id   = LOWORD(wp);
+        int note = HIWORD(wp);
 
         if (id >= IDC_REC_BASE && id < IDC_REC_BASE + CH_COUNT) {
             do_capture(g_cmb[id - IDC_REC_BASE]);
@@ -578,12 +625,21 @@ static LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             do_capture(g_scmb[id - IDC_SREC_BASE]);
             return 0;
         }
+
+        /* 何か触られたら [適用] を押せるようにする。
+           一覧からの選択・直接入力・チェック・数値のどれでも拾う。
+           プログラムから SetWindowText した場合、EDIT だけは EN_CHANGE が
+           飛んでくるので、load_values() の最後で必ず落としている。 */
+        if (note == CBN_SELCHANGE || note == CBN_EDITCHANGE || note == EN_CHANGE ||
+            (note == BN_CLICKED && (id == IDC_ENABLED || id == IDC_FULLSCREEN)))
+            set_dirty(TRUE);
+
         switch (id) {
         case IDC_OK:
             if (save_values()) DestroyWindow(hwnd);
             return 0;
         case IDC_APPLY:
-            if (save_values()) load_values();
+            if (save_values()) load_values();   /* 末尾で set_dirty(FALSE) */
             return 0;
         case IDC_CANCEL:
             DestroyWindow(hwnd);
@@ -595,10 +651,43 @@ static LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
 
+    case WM_ERASEBKGND: {
+        RECT r;
+        GetClientRect(hwnd, &r);
+        FillRect((HDC)wp, &r, theme_back_brush());
+        return 1;
+    }
+
+    case WM_DRAWITEM: {
+        const DRAWITEMSTRUCT *di = (const DRAWITEMSTRUCT *)lp;
+        if (di->CtlType == ODT_TAB)         { theme_draw_tab(di, g_font);   return TRUE; }
+        if (di->CtlID   == IDC_GROUP)       { theme_draw_group(di, g_font); return TRUE; }
+        return 0;
+    }
+
+    case WM_CTLCOLORDLG:
+    case WM_CTLCOLORBTN:
     case WM_CTLCOLORSTATIC:
-        /* グループボックス内の説明文が親と同じ背景で描かれるように */
-        SetBkMode((HDC)wp, TRANSPARENT);
-        return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX: {
+        HBRUSH br = NULL;
+        if (theme_ctlcolor(msg, (HDC)wp, &br)) return (LRESULT)br;
+        /* ライトのときは、グループ枠内の説明文が親と同じ背景で描かれるように */
+        if (msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORBTN) {
+            SetBkMode((HDC)wp, TRANSPARENT);
+            return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+        }
+        break;
+    }
+
+    case WM_SETTINGCHANGE:
+        /* Windows のライト/ダーク切り替えは "ImmersiveColorSet" で通知される */
+        if (lp && !lstrcmpiW((const WCHAR *)lp, L"ImmersiveColorSet") && theme_refresh()) {
+            theme_apply_window(hwnd);
+            rebuild(hwnd);
+            InvalidateRect(hwnd, NULL, TRUE);
+        }
+        return 0;
 
     case WM_DPICHANGED: {
         RECT *r = (RECT *)lp;
@@ -643,6 +732,7 @@ void settings_open(HINSTANCE inst, HWND owner)
         return;
     }
     g_inst = inst;
+    theme_init();
 
     icc.dwSize = sizeof(icc);
     icc.dwICC  = ICC_TAB_CLASSES | ICC_STANDARD_CLASSES;
@@ -654,7 +744,7 @@ void settings_open(HINSTANCE inst, HWND owner)
         wc.lpfnWndProc   = SettingsProc;
         wc.hInstance     = inst;
         wc.hCursor       = LoadCursorW(NULL, MAKEINTRESOURCEW(32512));
-        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.hbrBackground = NULL;          /* 背景は WM_ERASEBKGND で塗る */
         wc.lpszClassName = WNDCLASS_SETTINGS;
         wc.hIcon         = LoadIconW(inst, MAKEINTRESOURCEW(101));
         wc.hIconSm       = wc.hIcon;
@@ -673,6 +763,7 @@ void settings_open(HINSTANCE inst, HWND owner)
                             NULL, NULL, inst, NULL);
     if (!g_wnd) return;
 
+    theme_apply_window(g_wnd);
     build(g_wnd);
     load_values();
     center_on(g_wnd, owner);

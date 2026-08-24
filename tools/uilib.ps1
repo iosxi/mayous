@@ -11,6 +11,10 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 public static class UI {
+  // 呼び出し側が DPI 非対応だと GetWindowRect が仮想化された座標を返し、
+  // 画面キャプチャのビットマップが小さすぎて右下が欠ける。最初に必ず宣言する。
+  [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr ctx);
+  public static void GoDpiAware(){ try { SetProcessDpiAwarenessContext((IntPtr)(-4)); } catch {} }
   [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr h, int id);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
@@ -78,6 +82,8 @@ public static class UI {
 }
 '@
 
+[UI]::GoDpiAware()
+
 function Find-ProcWnd([uint32]$procId, [string]$cls) {
   $script:uiHit = [IntPtr]::Zero; $script:uiPid = $procId; $script:uiCls = $cls
   $cb = [UI+EnumProc]{ param($h,$p)
@@ -110,6 +116,15 @@ function Save-WndShot([IntPtr]$hwnd, [string]$path) {
   [UI]::PrintWindow($hwnd, $hdc, 2) | Out-Null
   $g.ReleaseHdc($hdc)
   $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+  # 目視確認用に縮小版も出す(等倍だと表示側で切り取られて全体が見えないことがある)
+  $sw2 = [int]($w * 0.72); $sh2 = [int]($h * 0.72)
+  $small = New-Object System.Drawing.Bitmap -ArgumentList $sw2, $sh2
+  $g2 = [System.Drawing.Graphics]::FromImage($small)
+  $g2.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+  $g2.DrawImage($bmp, 0, 0, $sw2, $sh2)
+  $g2.Dispose()
+  $small.Save(($path -replace '\.png$', '_small.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+  $small.Dispose()
   $g.Dispose(); $bmp.Dispose()
-  Write-Host ("  保存: {0}  ({1}x{2})" -f $path, $w, $h)
+  Write-Host ("  保存: {0}  ({1}x{2})  縮小版も併記" -f $path, $w, $h)
 }
