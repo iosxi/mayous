@@ -130,8 +130,10 @@ static void set_dirty(BOOL dirty)
     if (g_hApply) EnableWindow(g_hApply, dirty);
 }
 
-/* タブの並び。中ボタンはプレフィクスになれないので入らない。 */
-static const int kTabPfx[] = { BTN_L, BTN_R, BTN_X1, BTN_X2 };
+/* タブの並び。中ボタンはプレフィクスになれないので入らない。
+   よく設定するものを左に置く。左クリックは長押し判定が短く、そもそも
+   同時押しに使う機会が少ないので最後。 */
+static const int kTabPfx[] = { BTN_R, BTN_X1, BTN_X2, BTN_L };
 #define TAB_COUNT ((int)ARRAYSIZE(kTabPfx))
 
 /* 96dpi で書いた値を実際のフォント高さに合わせて伸ばす */
