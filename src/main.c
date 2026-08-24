@@ -438,7 +438,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdLine, int show)
     WNDCLASSEXW wc;
     MSG msg;
     HANDLE mutex;
-    BOOL firstRun;
 
     (void)prev; (void)show;
     g_inst = inst;
@@ -490,7 +489,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdLine, int show)
             g_cfg.iniPath);
         MessageBoxW(NULL, msg, MAYOUS_APPNAME, MB_OK | MB_ICONWARNING);
     }
-    firstRun = cfg_write_default_if_missing();
+    cfg_write_default_if_missing();
     cfg_load();
     startup_cleanup_legacy();   /* 旧バージョンが残した Run キーを掃除 */
 
@@ -551,10 +550,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdLine, int show)
     if (needs_agent()) agent_ensure();
     SetTimer(g_hwnd, TIMER_SANITY, 1000, NULL);
 
-    if (firstRun)
-        tray_balloon(MAYOUS_APPNAME L" を開始しました",
-                     L"右押し+左クリック = Windows キー / 右押し+ホイール = 左右スクロール / "
-                     L"左押し+右クリック = Alt+Tab\r\nトレイアイコンから設定できます。");
+    /* 起動しただけで通知は出さない。黙って常駐するのが常駐ソフトの礼儀。 */
 
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
         HWND sw = settings_hwnd();
