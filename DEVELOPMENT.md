@@ -288,20 +288,38 @@ powershell -ExecutionPolicy Bypass -File tools\stress.ps1
 
 ## リリース
 
+**exe が変わったら必ず版数を 1 つ上げます。** 番号を手で入れると必ずどこかがずれるので、
+`release.ps1` が現在の版数を `res\mayous.rc` から読み取って自動で繰り上げます。
+
 ```powershell
-.\release.ps1 -Version 1
+.\release.ps1              # 今の版数 +1 で出す(通常はこちら)
+.\release.ps1 -Version 7   # 版数を明示する
+.\release.ps1 -DryRun      # 何番になるかだけ見る
 ```
 
 1. `res\mayous.rc` と `src\common.h` のバージョンを揃える
-2. `build.bat` でビルド
+2. `build.bat` でビルド（常駐中の mayous があれば `--exit` で止めてから）
 3. `dist\mayous-vN.zip`（`mayous.exe` + 利用者向け `README.txt`）を作る
 4. `dist\mayous-vN.zip.sha256` を書き出す
 
-commit と tag は行いません。内容を確認してから実行してください。
+`dist\` は毎回空にしてから作り直すので、置かれるのは最新の 1 つだけです。
+過去の版は git の履歴に残ります。
+
+### 作業の流れ
+
+修正が終わったら、そのままコミットして push します。
 
 ```powershell
+.\release.ps1        # exe が変わったときだけ。ドキュメントだけの修正では不要
 git add -A
 git commit -m "..."
-git tag -a v1 -m "Mayous v1"
-git push; git push origin v1
+git push origin master
+```
+
+tag は `release.ps1` が作りません（意図して付け替えることがあるため）。
+必要なら手で付けてください。
+
+```powershell
+git tag -a v3 -m "Mayous v3"
+git push origin v3
 ```

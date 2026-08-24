@@ -1,6 +1,12 @@
 ﻿# Mayous リリース準備スクリプト
 #
-#   .\release.ps1 -Version 1
+#   .\release.ps1              今の版数 +1 で出す(通常はこちら)
+#   .\release.ps1 -Version 7   版数を明示する
+#   .\release.ps1 -DryRun      何番になるかだけ表示して終わる
+#
+# exe が変われば必ず版数を 1 つ上げる、という運用にしている。
+# 番号を手で入れると必ずどこかがずれるので、現在の版数を res\mayous.rc から
+# 読み取って自動で繰り上げる。
 #
 # バージョン番号が入る箇所を一箇所でまとめて更新し、ビルドして配布用 zip を作る。
 #
@@ -12,10 +18,24 @@
 #
 # commit と tag は行わない(内容を確認してから人が実行する)。最後に手順を表示する。
 
-param([Parameter(Mandatory = $true)][int]$Version)
+param([int]$Version = 0, [switch]$DryRun)
 
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
+
+# --- 版数の決定 -------------------------------------------------------
+$rcPath = Join-Path $PSScriptRoot 'res\mayous.rc'
+$rcText = [IO.File]::ReadAllText($rcPath)
+$m = [regex]::Match($rcText, 'FILEVERSION\s+(\d+),')
+if (-not $m.Success) { throw 'res\mayous.rc から現在の版数を読み取れませんでした。' }
+$current = [int]$m.Groups[1].Value
+
+if ($Version -le 0) { $Version = $current + 1 }
+Write-Host ("現在 v{0} -> 今回 v{1}" -f $current, $Version) -ForegroundColor Cyan
+if ($Version -le $current) {
+    Write-Host ("  ※ 版数を上げずに作り直します(通常は上げてください)" -f $Version) -ForegroundColor Yellow
+}
+if ($DryRun) { Write-Host '(-DryRun のため、ここで終わります)'; exit 0 }
 
 $tag     = "v$Version"
 $zipName = "mayous-$tag.zip"
@@ -23,8 +43,7 @@ Write-Host "=== Mayous $tag のリリース準備 ===" -ForegroundColor Cyan
 
 # --- 1. バージョン情報 (.rc) ---
 # .rc は BOM 無し ASCII のまま保つこと(windres がコードページで振り回されるため)
-$rcPath = Join-Path $PSScriptRoot 'res\mayous.rc'
-$rc = [IO.File]::ReadAllText($rcPath)
+$rc = $rcText
 $rc = [regex]::Replace($rc, 'FILEVERSION\s+\d+,\d+,\d+,\d+',    "FILEVERSION     $Version,0,0,0")
 $rc = [regex]::Replace($rc, 'PRODUCTVERSION\s+\d+,\d+,\d+,\d+', "PRODUCTVERSION  $Version,0,0,0")
 $rc = [regex]::Replace($rc, '"FileVersion",\s+"[^"]*"',    """FileVersion"",      ""$Version.0.0.0""")
