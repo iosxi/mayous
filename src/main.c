@@ -383,6 +383,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             chord_sanity();
             update_suspend();           /* Alt+Enter 等、前面が変わらない全画面化を拾う */
             if (needs_agent()) agent_ensure();
+        } else if (wp == TIMER_KEYPLAY) {
+            chord_key_tick();
         } else if (wp >= TIMER_HOLD_BASE && wp < TIMER_HOLD_BASE + BTN_COUNT) {
             chord_on_hold_timeout((int)(wp - TIMER_HOLD_BASE));
         }

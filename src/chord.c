@@ -77,7 +77,8 @@ static const DWORD kXData[BTN_COUNT] = { 0, 0, 0, XBUTTON1, XBUTTON2 };
  *  フックから戻った直後に処理されるので、体感上の遅れは無い。
  * ================================================================== */
 
-enum { Q_CLICK, Q_DOWN, Q_UP, Q_KEYS, Q_HWHEEL, Q_DRAG_START };
+enum { Q_CLICK, Q_DOWN, Q_UP, Q_KEYS, Q_HWHEEL, Q_DRAG_START,
+       Q_HOLD_DOWN, Q_HOLD_UP };
 
 typedef struct {
     BYTE    kind;
@@ -104,7 +105,7 @@ static void q_push(BYTE kind, int btn, int amount, const Action *a)
     it->kind   = kind;
     it->btn    = (BYTE)btn;
     it->amount = amount;
-    if (a && kind == Q_KEYS) {
+    if (a && (kind == Q_KEYS || kind == Q_HOLD_DOWN || kind == Q_HOLD_UP)) {
         it->nsteps = (BYTE)a->nsteps;
         CopyMemory(it->steps, a->steps, (size_t)a->nsteps * sizeof(KeyStep));
     }
@@ -164,20 +165,83 @@ static void fill_key(INPUT *in, WORD vk, BOOL up)
 
 /* --- ここから下の emit_* は、必ずメッセージループ側から呼ばれる --- */
 
-/* 1ステップは押す順・離す逆順を 1 回の SendInput にまとめて送る。
-   途中に他の入力が割り込まないので Alt+Tab のような組み合わせが確実に決まる。
-   複数ステップの場合はステップごとに分けて送る。 */
+/* 1ステップぶんの押す(または離す)をまとめて 1 回の SendInput で送る。
+   押すのは並び順、離すのは逆順。 */
+static void emit_step(const KeyStep *k, BOOL down)
+{
+    INPUT in[MAX_ACTION_KEYS];
+    int i, n = 0;
+
+    if (down) for (i = 0; i < k->nkeys; ++i)      fill_key(&in[n++], k->keys[i], FALSE);
+    else      for (i = k->nkeys - 1; i >= 0; --i) fill_key(&in[n++], k->keys[i], TRUE);
+    if (n) SendInput((UINT)n, in, sizeof(INPUT));
+}
+
+/* ==================================================================
+ *  キー再生
+ *
+ *  【押した瞬間に離してはいけない】
+ *  押下と離上を間髪入れずに送ると、キーボードフックを張っているアプリは
+ *  拾えるが、GetAsyncKeyState を一定間隔で見に行く方式のアプリは
+ *  取りこぼす。押されている時間がほぼ 0 なので、サンプリングの隙間に
+ *  丸ごと収まってしまうためである(実測: zoom-pon のキー登録が反応しない)。
+ *  ゲームをはじめ、状態を見に行く作りのアプリは珍しくない。
+ *
+ *  そこで KeyHoldMs のあいだ押しっぱなしにしてから離す。
+ *  待つのにスリープは使えない(メッセージループが止まり、フックの配送も
+ *  止まる)ので、タイマーで段階を進める。
+ * ================================================================== */
+
+static KeyStep g_play[MAX_ACTION_STEPS];
+static int     g_playN, g_playI;
+static BOOL    g_playHeld;      /* いま押下を出して離上待ち */
+
+static int hold_ms(void)   { return g_cfg.keyHoldMs > 0 ? g_cfg.keyHoldMs : 1; }
+static int gap_ms(void)    { int g = hold_ms() / 2; return g < 10 ? 10 : g; }
+
+static void play_stop(void)
+{
+    if (g_hwnd) KillTimer(g_hwnd, TIMER_KEYPLAY);
+    g_playN = g_playI = 0;
+    g_playHeld = FALSE;
+}
+
+/* 再生の途中なら、押しっぱなしのキーを今すぐ離して打ち切る */
+static void play_flush(void)
+{
+    if (g_playHeld && g_playI < g_playN) emit_step(&g_play[g_playI], FALSE);
+    play_stop();
+}
+
 static void emit_keys(const KeyStep *steps, int nsteps)
 {
-    INPUT in[MAX_ACTION_KEYS * 2];
-    int s, i, n;
+    if (nsteps <= 0) return;
+    play_flush();                       /* 前の再生が残っていれば畳む */
 
-    for (s = 0; s < nsteps; ++s) {
-        const KeyStep *k = &steps[s];
-        n = 0;
-        for (i = 0; i < k->nkeys; ++i)      fill_key(&in[n++], k->keys[i], FALSE);
-        for (i = k->nkeys - 1; i >= 0; --i) fill_key(&in[n++], k->keys[i], TRUE);
-        SendInput((UINT)n, in, sizeof(INPUT));
+    CopyMemory(g_play, steps, (size_t)nsteps * sizeof(KeyStep));
+    g_playN = nsteps;
+    g_playI = 0;
+
+    emit_step(&g_play[0], TRUE);
+    g_playHeld = TRUE;
+    if (g_hwnd) SetTimer(g_hwnd, TIMER_KEYPLAY, (UINT)hold_ms(), NULL);
+}
+
+/* TIMER_KEYPLAY から呼ばれ、押す->離す->次のステップ と段階を進める */
+void chord_key_tick(void)
+{
+    if (g_playN <= 0) { play_stop(); return; }
+
+    if (g_playHeld) {
+        emit_step(&g_play[g_playI], FALSE);
+        g_playHeld = FALSE;
+        ++g_playI;
+        if (g_playI >= g_playN) { play_stop(); return; }
+        if (g_hwnd) SetTimer(g_hwnd, TIMER_KEYPLAY, (UINT)gap_ms(), NULL);
+    } else {
+        emit_step(&g_play[g_playI], TRUE);
+        g_playHeld = TRUE;
+        if (g_hwnd) SetTimer(g_hwnd, TIMER_KEYPLAY, (UINT)hold_ms(), NULL);
     }
 }
 
@@ -265,6 +329,8 @@ void chord_pump(void)
         case Q_DOWN:  emit_button(it.btn, TRUE);     break;
         case Q_UP:    emit_button(it.btn, FALSE);    break;
         case Q_KEYS:  emit_keys(it.steps, it.nsteps);break;
+        case Q_HOLD_DOWN: emit_step(&it.steps[0], TRUE);  break;
+        case Q_HOLD_UP:   emit_step(&it.steps[0], FALSE); break;
         case Q_DRAG_START: emit_drag_start(it.btn, it.from, it.to); break;
         case Q_HWHEEL:
             /* このプロセスは WH_MOUSE_LL を保持しているため、自分で SendInput
@@ -281,6 +347,41 @@ static void inject_button(int btn, BOOL down) { q_push(down ? Q_DOWN : Q_UP, btn
 static void inject_click(int btn)             { q_push(Q_CLICK, btn, 0, NULL); }
 static void inject_hwheel(int amount)         { q_push(Q_HWHEEL, 0, amount, NULL); }
 static void inject_keys(const Action *a)      { q_push(Q_KEYS, 0, 0, a); }
+
+/* ---------------- 押しっぱなし(hold:) ---------------- */
+
+/* どのプレフィクスがどのキーを押さえているか。プレフィクスを離したら離す。 */
+static KeyStep g_holdKeys[BTN_COUNT];
+static BOOL    g_holding[BTN_COUNT];
+
+static void hold_begin(int pfx, const Action *a)
+{
+    Action tmp;
+    if (g_holding[pfx]) return;             /* 二重押しはしない */
+    g_holdKeys[pfx] = a->steps[0];
+    g_holding[pfx]  = TRUE;
+    ZeroMemory(&tmp, sizeof(tmp));
+    tmp.nsteps   = 1;
+    tmp.steps[0] = a->steps[0];
+    q_push(Q_HOLD_DOWN, 0, 0, &tmp);
+}
+
+static void hold_end(int pfx)
+{
+    Action tmp;
+    if (!g_holding[pfx]) return;
+    g_holding[pfx] = FALSE;
+    ZeroMemory(&tmp, sizeof(tmp));
+    tmp.nsteps   = 1;
+    tmp.steps[0] = g_holdKeys[pfx];
+    q_push(Q_HOLD_UP, 0, 0, &tmp);
+}
+
+static void hold_end_all(void)
+{
+    int i;
+    for (i = 0; i < BTN_COUNT; ++i) hold_end(i);
+}
 
 /* ---------------- タイマー ---------------- */
 
@@ -326,10 +427,16 @@ static void pfx_promote(int b)
     pfx_promote_at(b, NULL);
 }
 
-static void fire_action(const Action *a, int wheelAmount)
+static void fire_action(const Action *a, int wheelAmount, int pfx)
 {
     switch (a->kind) {
     case ACT_KEYS:         inject_keys(a);               break;
+    case ACT_HOLD_KEYS:
+        /* プレフィクスを離すまで押しっぱなしにする。
+           単独クリック(pfx < 0)では押しっぱなしにしようがないので普通に叩く。 */
+        if (pfx >= 0) hold_begin(pfx, a);
+        else          inject_keys(a);
+        break;
     case ACT_HWHEEL_LEFT:  inject_hwheel(-wheelAmount);  break;
     case ACT_HWHEEL_RIGHT: inject_hwheel(+wheelAmount);  break;
     default: break;
@@ -385,6 +492,9 @@ static void chord_flush(BOOL deliverPending)
     int i;
 
     DBG("chord_flush(%d)", (int)deliverPending);
+
+    play_flush();       /* 再生途中のキーを押しっぱなしにしない */
+    hold_end_all();
 
     for (i = 0; i < BTN_COUNT; ++i) {
         if (g_pfx[i].st == PS_PASSTHRU)
@@ -464,6 +574,7 @@ void chord_sanity(void)
         if (now - g_pfx[i].t0 >= 60000) {
             DBG("sanity: 60秒以上保留のまま pfx[%d] を畳む", i);
             hold_timer_kill(i);
+            hold_end(i);                  /* 押さえたままのキーを残さない */
             g_pfx[i].st = PS_IDLE;
         }
     }
@@ -488,6 +599,7 @@ static void reconcile(int btn)
         if (g_pfx[btn].st == PS_PASSTHRU)
             inject_button(btn, FALSE);    /* 注入したままの押下を閉じる */
         hold_timer_kill(btn);
+        hold_end(btn);                    /* 押さえたままのキーを残さない */
         g_pfx[btn].st = PS_IDLE;
     }
     g_swallowUp[btn] = FALSE;
@@ -507,7 +619,7 @@ static BOOL on_button_down(int btn, const MSLLHOOKSTRUCT *m)
 
         a = chord_at(p, btn);         /* サフィックス添字はボタン添字と同じ並び */
         if (a) {
-            fire_action(a, 0);
+            fire_action(a, 0, p);
             pfx_set(p, PS_CONSUMED);  /* プレフィクスの離上も殺す */
             g_swallowUp[btn] = TRUE;  /* このボタンの離上も殺す   */
             g_swallowT[btn]  = GetTickCount64();
@@ -542,12 +654,13 @@ static BOOL on_button_up(int btn)
         if (sa->kind == ACT_PASSTHRU)
             inject_click(btn);            /* 本来のクリックとして成立させる */
         else if (sa->kind != ACT_NONE)
-            fire_action(sa, 0);           /* 単独クリックを別機能に置き換え */
+            fire_action(sa, 0, -1);       /* 単独クリックを別機能に置き換え */
         /* ACT_NONE なら何も起こさない = そのボタンを無効化 */
         return TRUE;
     }
     case PS_CONSUMED:                     /* 同時押しに使われた -> 離上も闇に葬る */
         hold_timer_kill(btn);
+        hold_end(btn);                    /* hold: で押さえていたキーを離す */
         g_pfx[btn].st = PS_IDLE;
         return TRUE;
 
@@ -587,7 +700,7 @@ static BOOL on_wheel(const MSLLHOOKSTRUCT *m)
 
         a = g_on ? chord_at(p, suf) : NULL;
         if (a) {
-            fire_action(a, mag);
+            fire_action(a, mag, p);
             pfx_set(p, PS_CONSUMED);
             return TRUE;                  /* 縦スクロールは世に出さない */
         }

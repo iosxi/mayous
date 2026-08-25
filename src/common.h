@@ -14,7 +14,7 @@
 #include <windows.h>
 
 #define MAYOUS_APPNAME      L"Mayous"
-#define MAYOUS_VERSION      L"v4"
+#define MAYOUS_VERSION      L"v5"
 #define MAYOUS_WNDCLASS     L"MayousHiddenWnd"
 #define MAYOUS_AGENT_CLASS  L"MayousWheelAgentWnd"
 #define MAYOUS_MUTEX        L"Local\\MayousSingleInstance_{7A1C4E2B-9D3F-4A55-8C10-2E6B0F9D4A31}"
@@ -32,6 +32,7 @@
 
 /* タイマーID */
 #define TIMER_SANITY        1     /* 状態のスタック検出・前面ウィンドウ再評価 */
+#define TIMER_KEYPLAY       2     /* 注入したキーを押しっぱなしにする時間の管理 */
 #define TIMER_HOLD_BASE     10    /* +ボタン添字 */
 
 /* ---------------- ボタン ---------------- */
@@ -63,6 +64,7 @@ enum {
 typedef enum {
     ACT_NONE = 0,
     ACT_KEYS,          /* steps[] を順に再生する            */
+    ACT_HOLD_KEYS,     /* 同時押しを保っている間ずっと押しっぱなしにする */
     ACT_HWHEEL_LEFT,   /* 水平ホイール左                    */
     ACT_HWHEEL_RIGHT,  /* 水平ホイール右                    */
     ACT_PASSTHRU       /* 単独クリック用: 何も変えずそのまま */
@@ -94,6 +96,7 @@ typedef struct {
     int    dragThreshold;              /* px, 0 = システム値(SM_CXDRAG)を使う */
     int    holdTimeoutMs[BTN_COUNT];   /* 0 = 無効(離すまで保留し続ける)     */
     BOOL   suspendOnFullscreen;
+    int    keyHoldMs;                  /* 注入したキーを押しておく時間(ms) */
     ThemeMode theme;                   /* 設定画面の配色 */
     Action chord[CH_COUNT];
     Action single[BTN_COUNT];          /* 単独クリックの置き換え(サイドボタン用) */
@@ -125,6 +128,7 @@ void  chord_init(HWND hwnd);
 void  chord_recompute(void);
 BOOL  chord_on_mouse(UINT msg, const MSLLHOOKSTRUCT *m);
 void  chord_on_hold_timeout(int btn);
+void  chord_key_tick(void);        /* TIMER_KEYPLAY から呼ぶ */
 void  chord_pump(void);
 void  chord_set_active(BOOL on);
 void  chord_on_desktop_switch(void);

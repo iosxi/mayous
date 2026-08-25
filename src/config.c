@@ -175,6 +175,17 @@ BOOL cfg_parse_action(const WCHAR *src, Action *a)
         lstrcpynW(a->spec, L"passthru", ARRAYSIZE(a->spec));
         return TRUE;
     }
+    /* "hold:" を付けると、同時押しを保っている間ずっと押しっぱなしにする。
+       「押している間だけ効く」タイプのアプリ(拡大鏡など)と組み合わせるため。 */
+    if (!wcsncmp(buf, L"hold:", 5)) {
+        WCHAR one[64];
+        lstrcpynW(one, buf + 5, ARRAYSIZE(one));
+        str_trim(one);
+        if (!parse_step(one, &a->steps[0])) { a->kind = ACT_NONE; return FALSE; }
+        a->nsteps = 1;
+        a->kind   = ACT_HOLD_KEYS;
+        return TRUE;
+    }
     if (!wcscmp(buf, L"hwheel_left")  || !wcscmp(buf, L"wheelleft"))  { a->kind = ACT_HWHEEL_LEFT;  return TRUE; }
     if (!wcscmp(buf, L"hwheel_right") || !wcscmp(buf, L"wheelright")) { a->kind = ACT_HWHEEL_RIGHT; return TRUE; }
     if (!wcscmp(buf, L"alttab"))      lstrcpynW(buf, L"alt+tab",       ARRAYSIZE(buf));
@@ -343,6 +354,10 @@ L"RightHoldTimeoutMs=0\r\n"
 L"Side1HoldTimeoutMs=0\r\n"
 L"Side2HoldTimeoutMs=0\r\n"
 L"\r\n"
+L"; 注入したキーを押しておく時間(ms)。短すぎると、キーの状態を見に行く方式の\r\n"
+L"; アプリ(ゲームや拡大鏡など)が取りこぼす。\r\n"
+L"KeyHoldMs=40\r\n"
+L"\r\n"
 L"; フルスクリーンのアプリが前面のあいだは自動で停止する(ゲーム対策)\r\n"
 L"SuspendOnFullscreen=1\r\n"
 L"\r\n"
@@ -356,6 +371,8 @@ L";   hwheel_left / hwheel_right  水平ホイール\r\n"
 L";   win / alttab / alttab_back  よく使うものの別名\r\n"
 L";   ctrl+w, alt+left, f5 ...    任意のキーコンボ\r\n"
 L";   ctrl+c, ctrl+v              カンマ区切りで複数ステップ(記録の再生)\r\n"
+L";   hold:f13                    同時押しを保っている間ずっと押しっぱなしにする\r\n"
+L";                               (「押している間だけ効く」アプリと組み合わせる用)\r\n"
 L";\r\n"
 L"; キー名: a-z 0-9 f1-f24 tab enter esc space backspace delete insert home end\r\n"
 L";         pageup pagedown left right up down apps printscreen numpad0-9\r\n"

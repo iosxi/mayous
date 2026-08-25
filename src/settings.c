@@ -71,6 +71,14 @@ static const Preset kPresets[] = {
     { L"水平ホイール 左",                   L"hwheel_left" },
     { L"水平ホイール 右",                   L"hwheel_right" },
 
+    /* 「押している間だけ効く」アプリ(拡大鏡など)と組み合わせるための指定。
+       同時押しを保っているあいだ、そのキーを押しっぱなしにする。 */
+    { L"── 押している間ずっと ──",          NULL },
+    { L"F13 を押しっぱなし",                L"hold:f13" },
+    { L"F14 を押しっぱなし",                L"hold:f14" },
+    { L"Ctrl を押しっぱなし",               L"hold:ctrl" },
+    { L"Shift を押しっぱなし",              L"hold:shift" },
+
     { L"── ブラウザ・タブ ──",              NULL },
     { L"戻る (Alt+Left)",                   L"alt+left" },
     { L"進む (Alt+Right)",                  L"alt+right" },
