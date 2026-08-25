@@ -41,6 +41,39 @@ static PfxSlot   g_pfx[BTN_COUNT];
 static BOOL      g_swallowUp[BTN_COUNT];   /* サフィックス役で飲み込んだ押下の離上を殺す */
 static ULONGLONG g_swallowT[BTN_COUNT];
 
+/* ==================================================================
+ *  物理ボタンの地面 (Raw Input)
+ *
+ *  低レベルフックで握り潰した押下は GetAsyncKeyState に現れない。自分で
+ *  握り潰しているのだから当然だが、そのせいで「まだ押されているのか、
+ *  離上を取りこぼしたのか」を区別できない。
+ *
+ *  他の常駐ツール(X-Mouse Button Control, MouseGestureL.ahk など)が
+ *  フックの並びで手前に居ると、離上をそちらに食べられて mayous には
+ *  永久に届かないことがある。すると保留のまま居座り、以後の左クリックを
+ *  同時押しとして飲み込み続ける。利用者からは「左クリックが効かなくなった。
+ *  mayous を落としたら直った」に見える。保険は 60 秒後なので、実質ずっと壊れている。
+ *
+ *  Raw Input はフックの握り潰しに関係なく届く。実測は tools\test_rawinput.ps1:
+ *      3265ms RAW RIGHT DOWN    <- 握り潰した押下。アプリには届いていない
+ *      5281ms RAW RIGHT UP
+ *      5281ms RAW RIGHT DOWN [extra=4D594F55]  <- mayous が注入したクリック
+ *      5312ms ASYNC RIGHT DOWN  <- ASYNC は注入分しか見ていない
+ *  自分が注入したものは ulExtraInformation に MAYOUS_TAG が入るので除ける。
+ *
+ *  マウス移動でも WM_INPUT は飛ぶが、フックはどのみち移動を全部受けている
+ *  ので、増える仕事はたかが知れている。登録を出し入れすると「登録前に
+ *  離された」を取りこぼすので、起動時に一度だけ登録して持ち続ける。
+ * ================================================================== */
+
+static BOOL      g_physDown[BTN_COUNT];    /* 物理的に押されているか   */
+static ULONGLONG g_physUpT[BTN_COUNT];     /* 物理的に離された時刻     */
+static BOOL      g_rawOn;                  /* Raw Input を登録できたか */
+
+/* 通常の離上とのすれ違いで誤判定しないための猶予。
+   本物の離上はフックへ数 ms で届くので、これだけ空けば十分。 */
+#define RAW_LOST_MS 250
+
 static HWND      g_hwnd;
 static BOOL      g_on = FALSE;             /* 新しくボタンを乗っ取ってよいか */
 static int       g_dragThresh = 8;
@@ -513,7 +546,81 @@ static const Action *chord_at(int pfx, int suf)
 
 void chord_init(HWND hwnd)
 {
+    RAWINPUTDEVICE rid;
+
     g_hwnd = hwnd;
+
+    /* RIDEV_INPUTSINK: 前面でなくても届く。失敗しても致命傷ではない
+       (60 秒の保険だけが残る)ので、黙って諦める。 */
+    rid.usUsagePage = 0x01;      /* Generic Desktop */
+    rid.usUsage     = 0x02;      /* Mouse           */
+    rid.dwFlags     = RIDEV_INPUTSINK;
+    rid.hwndTarget  = hwnd;
+    g_rawOn = RegisterRawInputDevices(&rid, 1, sizeof(rid)) ? TRUE : FALSE;
+    DBG("raw input 登録: %d", (int)g_rawOn);
+}
+
+/* WM_INPUT から呼ぶ。物理ボタンの上下だけを拾う。 */
+void chord_on_raw_input(HRAWINPUT h)
+{
+    RAWINPUT ri;
+    UINT     sz = sizeof(ri);
+    USHORT   f;
+    int      i;
+    /* 添字は BTN_* の並び */
+    static const USHORT kDn[BTN_COUNT] = {
+        RI_MOUSE_LEFT_BUTTON_DOWN,  RI_MOUSE_RIGHT_BUTTON_DOWN,
+        RI_MOUSE_MIDDLE_BUTTON_DOWN, RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_5_DOWN
+    };
+    static const USHORT kUp[BTN_COUNT] = {
+        RI_MOUSE_LEFT_BUTTON_UP,    RI_MOUSE_RIGHT_BUTTON_UP,
+        RI_MOUSE_MIDDLE_BUTTON_UP,  RI_MOUSE_BUTTON_4_UP,   RI_MOUSE_BUTTON_5_UP
+    };
+
+    if (GetRawInputData(h, RID_INPUT, &ri, &sz, sizeof(RAWINPUTHEADER)) == (UINT)-1)
+        return;
+    if (ri.header.dwType != RIM_TYPEMOUSE) return;
+
+    /* 自分が注入したものは物理状態ではない */
+    if (ri.data.mouse.ulExtraInformation == (ULONG)MAYOUS_TAG) return;
+
+    f = ri.data.mouse.usButtonFlags;
+    if (!f) return;                          /* 移動だけ。ここで抜けるのが大半 */
+
+    for (i = 0; i < BTN_COUNT; ++i) {
+        if (f & kDn[i]) g_physDown[i] = TRUE;
+        if (f & kUp[i]) { g_physDown[i] = FALSE; g_physUpT[i] = GetTickCount64(); }
+    }
+}
+
+/* 離上を取りこぼしたまま居座っているプレフィクスを畳む。
+   物理的に離れているのに保留のままなら、その押下はもう戻ってこない。
+   保留していたクリックは捨てずに世に出す(利用者の操作を失わないため)。 */
+static void reap_lost(void)
+{
+    ULONGLONG now;
+    int i;
+
+    if (!g_rawOn) return;
+    now = GetTickCount64();
+
+    for (i = 0; i < BTN_COUNT; ++i) {
+        if (g_pfx[i].st != PS_PENDING && g_pfx[i].st != PS_CONSUMED) continue;
+        if (g_physDown[i]) continue;
+        if (now - g_physUpT[i] < RAW_LOST_MS) continue;
+
+        DBG("raw: pfx[%d] の離上を取りこぼした -> 畳む", i);
+        hold_timer_kill(i);
+        hold_end(i);
+        if (g_pfx[i].st == PS_PENDING) inject_click(i);
+        g_pfx[i].st = PS_IDLE;
+    }
+
+    /* サフィックス役で立てた「離上を殺す」印も、物理的に離れているなら用済み。
+       残しておくと次の離上を巻き添えにして、そのボタンが押されっぱなしになる。 */
+    for (i = 0; i < BTN_COUNT; ++i)
+        if (g_swallowUp[i] && !g_physDown[i] && now - g_physUpT[i] >= RAW_LOST_MS)
+            g_swallowUp[i] = FALSE;
 }
 
 /* 設定変更後に呼ぶ。どのボタンを乗っ取る必要があるかを再計算する。
@@ -616,11 +723,18 @@ void chord_sanity(void)
     ULONGLONG now = GetTickCount64();
     int i;
 
+    reap_lost();        /* まずは取りこぼした離上を回収する */
+
     for (i = 0; i < BTN_COUNT; ++i) {
         if (g_pfx[i].st == PS_IDLE) continue;
 
         if (g_pfx[i].st == PS_PASSTHRU) {
-            if (now - g_pfx[i].t0 >= 2000 && !(GetAsyncKeyState(kVk[i]) & 0x8000)) {
+            /* 注入した押下は世に出ているので GetAsyncKeyState にも見えるが、
+               手前のフックに食べられていると見えない。Raw Input が
+               「物理的に離れている」と言うならそちらを信じて閉じる。 */
+            BOOL up = g_rawOn ? (!g_physDown[i] && now - g_physUpT[i] >= RAW_LOST_MS)
+                              : !(GetAsyncKeyState(kVk[i]) & 0x8000);
+            if (now - g_pfx[i].t0 >= 2000 && up) {
                 DBG("sanity: 注入済みの押下を閉じる pfx[%d]", i);
                 inject_button(i, FALSE);
                 g_pfx[i].st = PS_IDLE;
@@ -666,6 +780,12 @@ static BOOL on_button_down(int btn, const MSLLHOOKSTRUCT *m)
 {
     int p;
 
+    /* フックと WM_INPUT はどちらが先に処理されるか決まっていない。
+       いま押下を見ているのだから物理的に押されているのは確実なので、
+       Raw Input を待たずにここで確定させる。そうしないと、raw が
+       遅れた場合に reap_lost() が生まれたての保留を殺してしまう。 */
+    g_physDown[btn] = TRUE;
+
     reconcile(btn);
     if (!g_on) return FALSE;          /* 無効中は新しく乗っ取らない */
 
@@ -698,6 +818,9 @@ static BOOL on_button_down(int btn, const MSLLHOOKSTRUCT *m)
 
 static BOOL on_button_up(int btn)
 {
+    g_physDown[btn] = FALSE;              /* 上と同じ理由で、raw を待たずに確定 */
+    g_physUpT[btn]  = GetTickCount64();
+
     if (g_swallowUp[btn]) {               /* サフィックスとして殺した押下の相方 */
         g_swallowUp[btn] = FALSE;
         return TRUE;
@@ -798,6 +921,11 @@ BOOL chord_on_mouse(UINT msg, const MSLLHOOKSTRUCT *m)
     BOOL swallow;
 
     if (msg == WM_MOUSEMOVE) return dispatch(msg, m);
+
+    /* ボタンが動くたびに、取りこぼした離上が無いか見る。
+       1 秒ごとの chord_sanity だけに任せると、その間ずっと
+       左クリックを飲み込み続けることになる。 */
+    reap_lost();
 
     DBG("evt 0x%04X  pfx=%d%d%d%d%d sw=%d%d%d%d%d",
         msg, (int)g_pfx[0].st, (int)g_pfx[1].st, (int)g_pfx[2].st,

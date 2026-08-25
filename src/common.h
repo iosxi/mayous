@@ -14,7 +14,7 @@
 #include <windows.h>
 
 #define MAYOUS_APPNAME      L"Mayous"
-#define MAYOUS_VERSION      L"v8"
+#define MAYOUS_VERSION      L"v9"
 #define MAYOUS_WNDCLASS     L"MayousHiddenWnd"
 #define MAYOUS_AGENT_CLASS  L"MayousWheelAgentWnd"
 #define MAYOUS_MUTEX        L"Local\\MayousSingleInstance_{7A1C4E2B-9D3F-4A55-8C10-2E6B0F9D4A31}"
@@ -144,6 +144,7 @@ BOOL  chord_on_mouse(UINT msg, const MSLLHOOKSTRUCT *m);
 void  chord_on_hold_timeout(int btn);
 void  chord_key_tick(void);        /* TIMER_KEYPLAY から呼ぶ */
 void  chord_key_release_tick(int pfx);  /* TIMER_KEYREL_BASE + pfx から呼ぶ */
+void  chord_on_raw_input(HRAWINPUT h);  /* WM_INPUT から呼ぶ(物理ボタンの地面) */
 void  chord_pump(void);
 void  chord_set_active(BOOL on);
 void  chord_on_desktop_switch(void);

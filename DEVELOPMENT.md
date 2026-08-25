@@ -255,7 +255,70 @@ VK を `GetAsyncKeyState` で走査しており、Python のオーバーヘッ�
 再現と確認は `tools\dbg_settings_paint.ps1`。子ウィンドウの可視状態を前後で比べ、
 実画面から切り出す（`PrintWindow` は強制的に描き直させてしまうので使えない）。
 
-### 8. ダークモードは非公開 API に頼るしかない
+### 8. 離上を他のツールに食べられたら、Raw Input で気づく
+
+利用者からの報告: X-Mouse Button Control と MouseGestureL.ahk を併用中、
+サイドボタンを押したあと**左クリックが効かなくなり、mayous を落としたら直った**。
+
+低レベルフックは**後から設置したものほど先に呼ばれる**。同種のツールが手前に
+居ると、mayous に届く前にイベントが消えることがある。プレフィクスの離上を
+食べられると、mayous は保留(`PS_PENDING`)のまま居座り、以後の左クリックを
+同時押しの相方として飲み込み続ける。保険は 60 秒後なので、体感では
+「ずっと壊れている」。
+
+厄介なのは、`GetAsyncKeyState` では**押しているのか離上を落としたのかを
+区別できない**こと。プレフィクスの押下は自分で握り潰しているので、そもそも
+async には現れない（[2](#2-getasynckeystate-は握り潰した押下を見ていない) の裏返し）。
+
+**Raw Input はフックの握り潰しに関係なく届く。** 実測（`tools\test_rawinput.ps1`）:
+
+```
+  3265ms RAW   RIGHT DOWN [extra=00000000]  <- 握り潰した押下。アプリには届いていない
+  5281ms RAW   RIGHT UP   [extra=00000000]
+  5281ms RAW   RIGHT DOWN [extra=4D594F55]  <- mayous が離上時に注入したクリック
+  5312ms ASYNC RIGHT DOWN                   <- ASYNC は注入分しか見ていない
+```
+
+`RAWMOUSE.ulExtraInformation` に `SendInput` の `dwExtraInfo` がそのまま入るので、
+`MAYOUS_TAG` で自分の注入を除ける。`hDevice` は当てにしない（テストも `SendInput`
+で押下を作るため、実機かどうかの判定には使えない）。
+
+そこで `RIDEV_INPUTSINK` で常時登録し、物理状態を `g_physDown[]` に持つ。
+`reap_lost()` が「物理的には離れているのに保留のまま」を見つけたら畳む。
+**保留していたクリックは捨てずに世に出す** ── 利用者の右クリックを失わないため。
+
+- 呼ぶのは `chord_on_mouse()` の入口（ボタンが動くたび）と `chord_sanity()`（保険）。
+  1 秒タイマーだけに任せると、その間ずっと左クリックを飲み込むことになる。
+- フックと `WM_INPUT` はどちらが先に処理されるか決まっていない。押下を見た時点で
+  `g_physDown[btn] = TRUE` を自分で確定させる。そうしないと raw が遅れたときに
+  生まれたての保留を殺してしまう。
+- 猶予は `RAW_LOST_MS` = 250ms。本物の離上は数 ms で届くので誤爆しない。
+
+登録を出し入れすると「登録前に離された」を取りこぼすので、起動時に一度だけ
+登録して持ち続ける。マウス移動でも `WM_INPUT` は飛ぶが、フックはどのみち移動を
+全部受けているので増える仕事はたかが知れている。実測（`tools\test_cpu.ps1`）:
+
+| | 待機 5 秒 | 移動 8000 回 |
+|---|---|---|
+| 導入前 | 15.6 ms | 203.1 ms |
+| 導入後 | 0.0 ms | 187.5 ms |
+
+再現は `tools\test_lost_up.ps1`。mayous の**あとに** `eater.exe` を起動して
+フックの手前に立たせ、物理的な離上を 1 回だけ食べさせる。
+
+| | 食べられたあとの左クリック |
+|---|---|
+| 導入前 | **0 / 3**（すべて飲み込まれた） |
+| 導入後 | **3 / 3**（保留していた右クリックもアプリに届いた） |
+
+> **併用ツールは本当に居る。** この開発機では LG HUB・MouseGestureL・
+> X-Mouse Button Control が常駐しており、`tools\dbg_x1_control.ps1` で
+> **mayous を止めた状態でも**サイドボタン1 が「中クリック」としてアプリに
+> 届くことを確認した。サイドボタン周りの挙動を調べるときは、まず
+> mayous 抜きの対照実験を取ること。mayous のせいだと思ったものが
+> よそのリマップだったということが起こる。
+
+### 9. ダークモードは非公開 API に頼るしかない
 
 Win32 の古いコントロールにはダークモードの公式 API がありません。Windows 自身も
 uxtheme.dll の**序数エクスポート**（名前が無く番号でしか呼べない関数）を使っています。
@@ -363,6 +426,11 @@ powershell -ExecutionPolicy Bypass -File tools\stress.ps1
 | `tools\test_keydur.ps1` | 注入したキーが実際に何 ms 押されているかの実測 |
 | `tools\test_autorepeat.ps1` | 注入した押下がオートリピートしないことの確認 |
 | `tools\dbg_settings_paint.ps1` | 窓が重なって離れたあと設定画面が描き直されるか |
+| `tools	est_side_none.ps1` | 「右クリック + サイドボタン = なし」周辺の収支 |
+| `tools	est_lost_up.ps1` | 他ツールに離上を食べられても復帰できるか |
+| `tools	est_rawinput.ps1` | 握り潰した押下が Raw Input には見えることの確認 |
+| `tools	est_cpu.ps1` | マウス移動を流したときの CPU 時間 |
+| `tools\dbg_x1_control.ps1` | mayous 抜きでサイドボタンがどう届くかの対照実験 |
 | `tools\test_zoompon_e2e.ps1` | 実物の zoom-pon を相手にした反応率（要 zoom-pon） |
 | `tools\shot_settings.ps1` | 設定画面のキャプチャ（目視確認用） |
 

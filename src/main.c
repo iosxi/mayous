@@ -333,6 +333,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         chord_pump();
         return 0;
 
+    case WM_INPUT:
+        /* 物理ボタンの地面。フックに握り潰された入力もここには届く。
+           WM_INPUT は後始末のため DefWindowProc へ渡す決まりになっている。 */
+        /* 注入があれば q_push が WM_MAYOUS_PUMP を投げるので、ここで
+           chord_pump() は呼ばない(移動のたびに来るので無駄を置かない)。 */
+        chord_on_raw_input((HRAWINPUT)lp);
+        return DefWindowProcW(hwnd, msg, wp, lp);
+
     case WM_MAYOUS_TRAY:
         switch (LOWORD(lp)) {
         case WM_LBUTTONDBLCLK:
