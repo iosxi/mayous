@@ -387,6 +387,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             chord_key_tick();
         } else if (wp >= TIMER_HOLD_BASE && wp < TIMER_HOLD_BASE + BTN_COUNT) {
             chord_on_hold_timeout((int)(wp - TIMER_HOLD_BASE));
+        } else if (wp >= TIMER_KEYREL_BASE && wp < TIMER_KEYREL_BASE + BTN_COUNT) {
+            chord_key_release_tick((int)(wp - TIMER_KEYREL_BASE));
         }
         chord_pump();
         return 0;

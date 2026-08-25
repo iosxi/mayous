@@ -175,8 +175,8 @@ BOOL cfg_parse_action(const WCHAR *src, Action *a)
         lstrcpynW(a->spec, L"passthru", ARRAYSIZE(a->spec));
         return TRUE;
     }
-    /* "hold:" を付けると、同時押しを保っている間ずっと押しっぱなしにする。
-       「押している間だけ効く」タイプのアプリ(拡大鏡など)と組み合わせるため。 */
+    /* "hold:" は昔の設定ファイル用。押しっぱなしは今や既定の挙動なので、
+       付いていてもいなくても同じ意味になる。読み捨てずに受け付けるだけ。 */
     if (!wcsncmp(buf, L"hold:", 5)) {
         WCHAR one[64];
         lstrcpynW(one, buf + 5, ARRAYSIZE(one));
@@ -354,9 +354,12 @@ L"RightHoldTimeoutMs=0\r\n"
 L"Side1HoldTimeoutMs=0\r\n"
 L"Side2HoldTimeoutMs=0\r\n"
 L"\r\n"
-L"; 注入したキーを押しておく時間(ms)。短すぎると、キーの状態を一定間隔で\r\n"
-L"; 見に行く方式のアプリ(ゲームや拡大鏡など)が、間隔の隙間に収まった押下を\r\n"
-L"; 丸ごと取りこぼす。長くしすぎると文字入力欄でキーリピートが始まる。\r\n"
+L"; 注入したキーを「最低でも」押しておく時間(ms)。\r\n"
+L"; 同時押しに割り当てたキーは先に押したボタンを離すまで押しっぱなしになるので、\r\n"
+L"; 普通はこれより長くなる。効いてくるのは同時押しが一瞬で終わった場合と、\r\n"
+L"; 押しっぱなしにできない場合(複数ステップ・単独クリック)。\r\n"
+L"; 短すぎると、キーの状態を一定間隔で見に行く方式のアプリ(ゲームや拡大鏡など)が、\r\n"
+L"; 間隔の隙間に収まった押下を丸ごと取りこぼす。\r\n"
 L"KeyHoldMs=120\r\n"
 L"\r\n"
 L"; フルスクリーンのアプリが前面のあいだは自動で停止する(ゲーム対策)\r\n"
@@ -372,8 +375,10 @@ L";   hwheel_left / hwheel_right  水平ホイール\r\n"
 L";   win / alttab / alttab_back  よく使うものの別名\r\n"
 L";   ctrl+w, alt+left, f5 ...    任意のキーコンボ\r\n"
 L";   ctrl+c, ctrl+v              カンマ区切りで複数ステップ(記録の再生)\r\n"
-L";   hold:f13                    同時押しを保っている間ずっと押しっぱなしにする\r\n"
-L";                               (「押している間だけ効く」アプリと組み合わせる用)\r\n"
+L";\r\n"
+L"; 1 ステップの指定は、先に押したボタンを離すまで押しっぱなしになる。\r\n"
+L"; (hold: を付けても同じ意味。昔の設定ファイルのために受け付けているだけ)\r\n"
+L"; カンマ区切りの複数ステップだけは、押しっぱなしにできないので順に再生する。\r\n"
 L";\r\n"
 L"; キー名: a-z 0-9 f1-f24 tab enter esc space backspace delete insert home end\r\n"
 L";         pageup pagedown left right up down apps printscreen numpad0-9\r\n"

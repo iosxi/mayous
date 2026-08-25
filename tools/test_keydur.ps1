@@ -1,5 +1,6 @@
 ﻿# mayous が実際に何ミリ秒キーを押しているかを測る(zoom-pon は使わない)
-param([string]$Action = 'a', [int]$KeyHoldMs = 40, [int]$Shots = 6)
+# -PrefixHoldMs: 同時押し成立後、先に押したボタン(右)を離すまでの時間
+param([string]$Action = 'a', [int]$KeyHoldMs = 120, [int]$Shots = 6, [int]$PrefixHoldMs = 100, [string]$Vk = '41')
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'uilib.ps1')
 
@@ -34,14 +35,17 @@ Start-Sleep -Seconds 1
 Start-Process (Join-Path $mdir 'mayous.exe') | Out-Null
 Start-Sleep -Seconds 2
 
-$secs = $Shots * 1.2 + 3
-$job = Start-Process python -ArgumentList @((Join-Path $PSScriptRoot 'keydur.py'), $secs, '41') `
+$secs = $Shots * ($PrefixHoldMs / 1000.0 + 1.3) + 3
+$job = Start-Process python -ArgumentList @((Join-Path $PSScriptRoot 'keydur.py'), $secs, $Vk) `
         -NoNewWindow -PassThru -RedirectStandardOutput (Join-Path $mdir 'out.txt')
 Start-Sleep -Seconds 2
 
 function W([int]$ms){ Start-Sleep -Milliseconds $ms }
 for ($i = 1; $i -le $Shots; $i++) {
-    [ZP2]::RDown(); W 60; [ZP2]::LDown(); W 40; [ZP2]::LUp(); W 60; [ZP2]::RUp()
+    [ZP2]::RDown(); W 60; [ZP2]::LDown(); W 40; [ZP2]::LUp()
+    $rest = $PrefixHoldMs - 40
+    if ($rest -gt 0) { W $rest }
+    [ZP2]::RUp()
     W 1000
 }
 $job.WaitForExit()

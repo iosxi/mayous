@@ -348,39 +348,94 @@ static void inject_click(int btn)             { q_push(Q_CLICK, btn, 0, NULL); }
 static void inject_hwheel(int amount)         { q_push(Q_HWHEEL, 0, amount, NULL); }
 static void inject_keys(const Action *a)      { q_push(Q_KEYS, 0, 0, a); }
 
-/* ---------------- 押しっぱなし(hold:) ---------------- */
+/* ================================================================== */
+/*  押しっぱなし                                                       */
+/*
+ *  同時押しに割り当てたキーは、プレフィクスを離すまで押しっぱなしにする。
+ *  これが既定の挙動である(かつては hold: を付けた時だけの特別扱いだった)。
+ *
+ *  一瞬叩くだけだと、キーボードフックを張らず GetAsyncKeyState を一定間隔で
+ *  見に行く作りのアプリに取りこぼされる。押しっぱなしなら、相手の周期が
+ *  どれだけ伸びていても必ず観測される。
+ *
+ *  注入した押下はオートリピートしない(タイプマティックはキーボード側が
+ *  作るものなので、SendInput の押下を Windows が繰り返すことはない。
+ *  tools\test_autorepeat.ps1 で実測: 3 秒押しっぱなしでも 1 文字)。
+ *  だから Ctrl+W のような組み合わせを押しっぱなしにしても、タブが
+ *  次々に閉じるような事故は起きない。
+ *
+ *  離すのは「プレフィクスを離した時」。サフィックス(後から押す側)は
+ *  叩いてすぐ離すのが普通なので、そちらを基準にすると結局一瞬になってしまう。
+ *  ホイールをサフィックスにした場合は、そもそも離上が存在しない。
+ *
+ *  ただし同時押しが一瞬で終わると押下時間も一瞬になってしまうので、
+ *  KeyHoldMs に満たない間は離上を遅らせる。KeyHoldMs は上限ではなく
+ *  「最低でもこれだけは押す」という下限として働く。
+ * ================================================================== */
 
-/* どのプレフィクスがどのキーを押さえているか。プレフィクスを離したら離す。 */
-static KeyStep g_holdKeys[BTN_COUNT];
-static BOOL    g_holding[BTN_COUNT];
+typedef struct {
+    KeyStep   step;
+    BOOL      down;
+    ULONGLONG t0;      /* 押した時刻。最低押下時間の判定に使う */
+} HoldState;
+
+static HoldState g_hold[BTN_COUNT];
+
+static void hold_push(const KeyStep *s, BOOL down)
+{
+    Action tmp;
+    ZeroMemory(&tmp, sizeof(tmp));
+    tmp.nsteps   = 1;
+    tmp.steps[0] = *s;
+    q_push(down ? Q_HOLD_DOWN : Q_HOLD_UP, 0, 0, &tmp);
+}
+
+static void hold_rel_timer_kill(int pfx)
+{
+    if (g_hwnd) KillTimer(g_hwnd, TIMER_KEYREL_BASE + pfx);
+}
+
+/* 最低押下時間を待たずに今すぐ離す。畳む処理はどれもこちらを使う
+   (終了やデスクトップ切替を待たせるわけにはいかない)。 */
+static void hold_release_now(int pfx)
+{
+    if (!g_hold[pfx].down) return;
+    hold_rel_timer_kill(pfx);
+    g_hold[pfx].down = FALSE;
+    hold_push(&g_hold[pfx].step, FALSE);
+}
 
 static void hold_begin(int pfx, const Action *a)
 {
-    Action tmp;
-    if (g_holding[pfx]) return;             /* 二重押しはしない */
-    g_holdKeys[pfx] = a->steps[0];
-    g_holding[pfx]  = TRUE;
-    ZeroMemory(&tmp, sizeof(tmp));
-    tmp.nsteps   = 1;
-    tmp.steps[0] = a->steps[0];
-    q_push(Q_HOLD_DOWN, 0, 0, &tmp);
+    hold_release_now(pfx);          /* 押しっぱなし中の再発火 = 押し直し */
+    g_hold[pfx].step = a->steps[0];
+    g_hold[pfx].down = TRUE;
+    g_hold[pfx].t0   = GetTickCount64();
+    hold_push(&g_hold[pfx].step, TRUE);
 }
 
+/* プレフィクスが離された。まだ KeyHoldMs に満たなければ、その分だけ待ってから離す。 */
 static void hold_end(int pfx)
 {
-    Action tmp;
-    if (!g_holding[pfx]) return;
-    g_holding[pfx] = FALSE;
-    ZeroMemory(&tmp, sizeof(tmp));
-    tmp.nsteps   = 1;
-    tmp.steps[0] = g_holdKeys[pfx];
-    q_push(Q_HOLD_UP, 0, 0, &tmp);
+    ULONGLONG el;
+    int rest;
+
+    if (!g_hold[pfx].down) return;
+    el = GetTickCount64() - g_hold[pfx].t0;
+    rest = g_cfg.keyHoldMs - (int)el;
+    if (rest <= 0 || !g_hwnd) { hold_release_now(pfx); return; }
+    SetTimer(g_hwnd, TIMER_KEYREL_BASE + pfx, (UINT)rest, NULL);
 }
 
 static void hold_end_all(void)
 {
     int i;
-    for (i = 0; i < BTN_COUNT; ++i) hold_end(i);
+    for (i = 0; i < BTN_COUNT; ++i) hold_release_now(i);
+}
+
+void chord_key_release_tick(int pfx)
+{
+    if (pfx >= 0 && pfx < BTN_COUNT) hold_release_now(pfx);
 }
 
 /* ---------------- タイマー ---------------- */
@@ -430,12 +485,14 @@ static void pfx_promote(int b)
 static void fire_action(const Action *a, int wheelAmount, int pfx)
 {
     switch (a->kind) {
-    case ACT_KEYS:         inject_keys(a);               break;
-    case ACT_HOLD_KEYS:
-        /* プレフィクスを離すまで押しっぱなしにする。
-           単独クリック(pfx < 0)では押しっぱなしにしようがないので普通に叩く。 */
-        if (pfx >= 0) hold_begin(pfx, a);
-        else          inject_keys(a);
+    case ACT_KEYS:
+    case ACT_HOLD_KEYS:     /* hold: 付きの古い設定。今はどちらも同じ意味 */
+        /* 既定でプレフィクスを離すまで押しっぱなしにする。
+           押しっぱなしにしようがない 2 つの場合だけ、順に叩く方式に落とす:
+             ・複数ステップ(Ctrl+C のあと Ctrl+V など)
+             ・単独クリック(pfx < 0)。離した時に発火するので押しようがない */
+        if (pfx >= 0 && a->nsteps == 1) hold_begin(pfx, a);
+        else                            inject_keys(a);
         break;
     case ACT_HWHEEL_LEFT:  inject_hwheel(-wheelAmount);  break;
     case ACT_HWHEEL_RIGHT: inject_hwheel(+wheelAmount);  break;

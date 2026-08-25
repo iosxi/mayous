@@ -14,7 +14,7 @@
 #include <windows.h>
 
 #define MAYOUS_APPNAME      L"Mayous"
-#define MAYOUS_VERSION      L"v6"
+#define MAYOUS_VERSION      L"v7"
 #define MAYOUS_WNDCLASS     L"MayousHiddenWnd"
 #define MAYOUS_AGENT_CLASS  L"MayousWheelAgentWnd"
 #define MAYOUS_MUTEX        L"Local\\MayousSingleInstance_{7A1C4E2B-9D3F-4A55-8C10-2E6B0F9D4A31}"
@@ -34,6 +34,7 @@
 #define TIMER_SANITY        1     /* 状態のスタック検出・前面ウィンドウ再評価 */
 #define TIMER_KEYPLAY       2     /* 注入したキーを押しっぱなしにする時間の管理 */
 #define TIMER_HOLD_BASE     10    /* +ボタン添字 */
+#define TIMER_KEYREL_BASE   20    /* +ボタン添字。押しっぱなしのキーを離す時刻 */
 
 /* ---------------- ボタン ---------------- */
 
@@ -91,11 +92,15 @@ typedef enum { THEME_SYSTEM = 0, THEME_LIGHT, THEME_DARK } ThemeMode;
 
 #define MAX_EXCLUDE 2048
 
-/* 注入したキーを押しておく時間。キーボードフックで待ち受けるアプリは
-   押下の瞬間に気付くので何 ms でも構わないが、GetAsyncKeyState を一定間隔で
-   見に行く作りのアプリは、押している時間がその間隔より短いと丸ごと
-   取りこぼす。拡大鏡のように毎周期で重い描画をするアプリだと間隔が
-   100ms 前後まで伸びることがあるため、既定はそれを超える値にしてある。 */
+/* 注入したキーを「最低でも」押しておく時間。
+   同時押しに割り当てたキーはプレフィクスを離すまで押しっぱなしにするので、
+   通常はこの値より長くなる。効いてくるのは、同時押しが一瞬で終わった場合と、
+   押しっぱなしにしようがない場合(複数ステップ・単独クリック)。
+   キーボードフックで待ち受けるアプリは押下の瞬間に気付くので何 ms でも
+   構わないが、GetAsyncKeyState を一定間隔で見に行く作りのアプリは、
+   押している時間がその間隔より短いと丸ごと取りこぼす。拡大鏡のように
+   毎周期で重い描画をするアプリだと間隔が 100ms 前後まで伸びることがある
+   ため、既定はそれを超える値にしてある。 */
 #define KEY_HOLD_MS_DEFAULT 120
 #define KEY_HOLD_MS_MIN     1
 #define KEY_HOLD_MS_MAX     2000
@@ -138,6 +143,7 @@ void  chord_recompute(void);
 BOOL  chord_on_mouse(UINT msg, const MSLLHOOKSTRUCT *m);
 void  chord_on_hold_timeout(int btn);
 void  chord_key_tick(void);        /* TIMER_KEYPLAY から呼ぶ */
+void  chord_key_release_tick(int pfx);  /* TIMER_KEYREL_BASE + pfx から呼ぶ */
 void  chord_pump(void);
 void  chord_set_active(BOOL on);
 void  chord_on_desktop_switch(void);
