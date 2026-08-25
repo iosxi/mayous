@@ -40,6 +40,7 @@
 #define IDC_APPLY        1132
 #define IDC_OPENINI      1133
 #define IDC_GROUP         950   /* グループ枠(ダーク時は所有者描画) */
+#define IDC_LWARN         951   /* 左クリックタブの注意書き */
 
 /* ------------------------------------------------------------------ */
 /* 一覧から選べる機能                                                  */
@@ -118,6 +119,7 @@ static HWND   g_lbl[CH_COUNT], g_cmb[CH_COUNT], g_rec[CH_COUNT];
 static HWND   g_slbl[BTN_COUNT], g_scmb[BTN_COUNT], g_srec[BTN_COUNT];
 static HWND   g_hHold[BTN_COUNT];
 static HWND   g_hDrag, g_hExclude, g_hApply;
+static HWND   g_lWarn[2];        /* 左クリックタブの注意書き */
 
 /* 未保存の変更があるか。[適用] の活性はこれに従う。 */
 static BOOL   g_dirty;
@@ -236,6 +238,10 @@ static void show_tab(int tab)
             ShowWindow(g_lbl[id], show);
             ShowWindow(g_cmb[id], show);
             ShowWindow(g_rec[id], show);
+        }
+        if (pfx == BTN_L) {
+            if (g_lWarn[0]) ShowWindow(g_lWarn[0], show);
+            if (g_lWarn[1]) ShowWindow(g_lWarn[1], show);
         }
     }
 }
@@ -383,7 +389,8 @@ static BOOL save_values(void)
 
 /* タブ内の最大行数: 単独 1 + サフィックス(自分を除く) 6 */
 #define TAB_ROWS  7
-#define TAB_H     (32 + TAB_ROWS * ROW_H + 12)
+/* 左クリックタブには注意書きを 2 行入れるので、その分だけ余白を持たせる */
+#define TAB_H     (32 + TAB_ROWS * ROW_H + 22)
 /* 動作: 上余白22 + チェック3行(22*3) + 長押し2行(26*2) + 距離1行(26) + 下余白10 */
 #define GRP2_H    (22 + 22 * 2 + 26 * 3 + 10)
 #define GRP3_H     82
@@ -412,6 +419,26 @@ static void mk_group(HWND hwnd, const WCHAR *title, int x, int y, int w, int h)
         mk(hwnd, L"STATIC", title, SS_OWNERDRAW, x, y, w, h, IDC_GROUP);
     else
         mk(hwnd, L"BUTTON", title, BS_GROUPBOX, x, y, w, h, 0);
+}
+
+/* チェックボックス。
+ *
+ *  テーマが効いたチェックボックスは、文字を**テーマが**描くため
+ *  WM_CTLCOLORSTATIC で指定した文字色を無視する。ダークにしたつもりでも
+ *  黒文字のまま出る環境がある(23H2 で確認。24H2 ではたまたま白く出ていた)。
+ *  そこで、チェックボックスには箱だけを持たせ、文字は隣の STATIC に出す。
+ *  STATIC なら文字色は確実にこちらの指定が効く。
+ *  文字をクリックしても切り替わるよう、SS_NOTIFY で拾って箱へ渡す。
+ */
+#define CHECK_LABEL_OFFSET 500      /* ラベルの ID = 本体の ID + これ */
+
+static HWND mk_check(HWND hwnd, const WCHAR *text, int x, int y, int w, int id)
+{
+    HWND box = mk(hwnd, L"BUTTON", L"", BS_AUTOCHECKBOX | WS_TABSTOP,
+                  x, y + 1, 18, 18, id);
+    mk(hwnd, L"STATIC", text, SS_LEFT | SS_CENTERIMAGE | SS_NOTIFY,
+       x + 22, y, w - 22, 20, id + CHECK_LABEL_OFFSET);
+    return box;
 }
 
 /* タブは「中身の面」の背景を自分で塗ってくれないので、ダークでは
@@ -481,17 +508,28 @@ static void build(HWND hwnd)
                     IDC_CHORD_BASE + id, IDC_REC_BASE + id, FALSE);
             y += ROW_H;
         }
+
+        /* 左ボタンだけは代償が大きいので、そのタブに注意書きを出す。
+           ここに割り当てると、左クリックの押下が「離すまで」アプリに
+           届かなくなり、ウィンドウの切り替えやドラッグが鈍くなる。 */
+        if (pfx == BTN_L) {
+            g_lWarn[0] = mk(hwnd, L"STATIC",
+                L"※ ここに何か割り当てると、左クリックの押下が「離すまで」アプリに届かなく",
+                SS_LEFT, 12 + 14, y + 4, WIN_W - 24 - 28, 16, IDC_LWARN);
+            g_lWarn[1] = mk(hwnd, L"STATIC",
+                L"　 なります。ウィンドウの切り替えが遅れたり、枠を掴み損ねたりします。",
+                SS_LEFT, 12 + 14, y + 20, WIN_W - 24 - 28, 16, IDC_LWARN);
+        }
     }
     gy = m + TAB_H + 10;
 
     /* --- 動作 --- */
     mk_group(hwnd, L" 動作 ", m, gy, gw, GRP2_H);
     y = gy + 22;
-    mk(hwnd, L"BUTTON", L"有効にする", BS_AUTOCHECKBOX | WS_TABSTOP,
-       m + 14, y, gw - 28, 20, IDC_ENABLED);
+    mk_check(hwnd, L"有効にする", m + 14, y, gw - 28, IDC_ENABLED);
     y += 22;
-    mk(hwnd, L"BUTTON", L"フルスクリーンのアプリが前面のときは停止する",
-       BS_AUTOCHECKBOX | WS_TABSTOP, m + 14, y, gw - 28, 20, IDC_FULLSCREEN);
+    mk_check(hwnd, L"フルスクリーンのアプリが前面のときは停止する",
+             m + 14, y, gw - 28, IDC_FULLSCREEN);
     y += 26;
 
     /* 長押し判定は 2 列に並べる */
@@ -568,6 +606,7 @@ static void rebuild(HWND hwnd)
     ZeroMemory(g_scmb, sizeof(g_scmb));
     ZeroMemory(g_hHold, sizeof(g_hHold));
     g_hApply = NULL;
+    ZeroMemory(g_lWarn, sizeof(g_lWarn));
     make_font();
     build(hwnd);
     load_values();
@@ -625,6 +664,14 @@ static LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (id >= IDC_SREC_BASE && id < IDC_SREC_BASE + BTN_COUNT) {
             do_capture(g_scmb[id - IDC_SREC_BASE]);
+            return 0;
+        }
+        /* チェックボックスの文字(隣の STATIC)が押された -> 本体へ渡す */
+        if (note == STN_CLICKED &&
+            (id == IDC_ENABLED    + CHECK_LABEL_OFFSET ||
+             id == IDC_FULLSCREEN + CHECK_LABEL_OFFSET)) {
+            HWND box = GetDlgItem(hwnd, id - CHECK_LABEL_OFFSET);
+            if (box) { SendMessageW(box, BM_CLICK, 0, 0); SetFocus(box); }
             return 0;
         }
 

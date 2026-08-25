@@ -256,13 +256,21 @@ const WCHAR *cfg_hold_ini_key(int btn)
 }
 
 /* 既定値。ここに無い組み合わせはすべて none。 */
+/* 既定では左ボタンをプレフィクスにしない。
+ *
+ *  プレフィクスにすると、そのボタンの押下は「離すまで(または長押し判定まで)」
+ *  アプリに届かない。右ボタンならほぼ気にならないが、左ボタンは
+ *  ウィンドウの切り替えやドラッグの起点そのものなので、
+ *  0.2 秒の遅れが「反応が鈍い」「枠を掴み損ねる」として体感に出る。
+ *  使いたい人は設定画面から有効にできるが、既定では触らない。
+ */
 static const WCHAR *chord_default(int pfx, int suf)
 {
     if (pfx == BTN_R && suf == SUF_L)   return L"win";
+    if (pfx == BTN_R && suf == SUF_M)   return L"alttab";
     /* ホイールを手前に回す(下) = 右へ。紙をめくる向きに合わせている。 */
     if (pfx == BTN_R && suf == SUF_WDN) return L"hwheel_right";
     if (pfx == BTN_R && suf == SUF_WUP) return L"hwheel_left";
-    if (pfx == BTN_L && suf == SUF_R)   return L"alttab";
     return L"none";
 }
 
@@ -356,9 +364,14 @@ L";         browserback browserfwd ほか\r\n"
 L"; 修飾子: ctrl alt shift win\r\n"
 L"\r\n"
 L"RightThenLeft=win\r\n"
+L"RightThenMiddle=alttab\r\n"
 L"RightThenWheelDown=hwheel_right\r\n"
 L"RightThenWheelUp=hwheel_left\r\n"
-L"LeftThenRight=alttab\r\n"
+L"\r\n"
+L"; 左クリックは既定では乗っ取らない。プレフィクスにすると、その押下は\r\n"
+L"; 離すまで(または長押し判定まで)アプリに届かないため、ウィンドウの\r\n"
+L"; 切り替えが遅れたり、枠を掴み損ねたりする。承知のうえで使う場合だけ\r\n"
+L"; LeftThen... に何か割り当てること。\r\n"
 L"\r\n"
 L"; 書かれていない組み合わせは none です。設定ウィンドウから編集するのが簡単です。\r\n"
 L"; 例: Side1ThenLeft / Side2ThenWheelUp / LeftThenSide1 ...\r\n"

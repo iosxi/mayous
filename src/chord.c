@@ -77,13 +77,14 @@ static const DWORD kXData[BTN_COUNT] = { 0, 0, 0, XBUTTON1, XBUTTON2 };
  *  フックから戻った直後に処理されるので、体感上の遅れは無い。
  * ================================================================== */
 
-enum { Q_CLICK, Q_DOWN, Q_UP, Q_KEYS, Q_HWHEEL };
+enum { Q_CLICK, Q_DOWN, Q_UP, Q_KEYS, Q_HWHEEL, Q_DRAG_START };
 
 typedef struct {
     BYTE    kind;
     BYTE    btn;
     BYTE    nsteps;
     int     amount;
+    POINT   from, to;      /* Q_DRAG_START: 押した位置 と 今の位置 */
     KeyStep steps[MAX_ACTION_STEPS];
 } QItem;
 
@@ -108,6 +109,23 @@ static void q_push(BYTE kind, int btn, int amount, const Action *a)
         CopyMemory(it->steps, a->steps, (size_t)a->nsteps * sizeof(KeyStep));
     }
     g_qTail = next;
+
+    if (g_hwnd) PostMessageW(g_hwnd, WM_MAYOUS_PUMP, 0, 0);
+}
+
+static void q_push_drag(int btn, POINT from, POINT to)
+{
+    int next = (g_qTail + 1) % QCAP;
+    QItem *it;
+
+    if (next == g_qHead) return;
+    it = &g_q[g_qTail];
+    ZeroMemory(it, sizeof(*it));
+    it->kind = Q_DRAG_START;
+    it->btn  = (BYTE)btn;
+    it->from = from;
+    it->to   = to;
+    g_qTail  = next;
 
     if (g_hwnd) PostMessageW(g_hwnd, WM_MAYOUS_PUMP, 0, 0);
 }
@@ -176,6 +194,52 @@ static void emit_button(int btn, BOOL down)
     SendInput(1, &in, sizeof(in));
 }
 
+/* 仮想デスクトップ全体を 0..65535 に正規化する(複数モニタでも正しく飛ぶ) */
+static void fill_move(INPUT *in, POINT p)
+{
+    int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+    if (vw < 2) vw = 2;
+    if (vh < 2) vh = 2;
+
+    ZeroMemory(in, sizeof(*in));
+    in->type           = INPUT_MOUSE;
+    in->mi.dwFlags     = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+    in->mi.dx          = (LONG)MulDiv(p.x - vx, 65535, vw - 1);
+    in->mi.dy          = (LONG)MulDiv(p.y - vy, 65535, vh - 1);
+    in->mi.dwExtraInfo = MAYOUS_TAG;
+}
+
+/* ドラッグの開始を「押した場所」で成立させる。
+ *
+ *  保留していた押下をドラッグ判定で世に出すとき、単に今のカーソル位置で
+ *  押下を注入すると、既にしきい値ぶん離れているので、ウィンドウの枠のような
+ *  細い当たり判定を掴み損ねる(「枠を掴んだつもりが枠の外を掴んでいる」)。
+ *  そこで「押した位置へ戻す → 押す → 今の位置へ動かす」を 1 回の SendInput で
+ *  まとめて送る。アプリからは、ユーザーが実際にやった通りに見える。
+ */
+static void emit_drag_start(int btn, POINT from, POINT to)
+{
+    INPUT in[3];
+    int n = 0;
+
+    fill_move(&in[n++], from);
+
+    ZeroMemory(&in[n], sizeof(in[n]));
+    in[n].type           = INPUT_MOUSE;
+    in[n].mi.dwFlags     = kDownFlag[btn];
+    in[n].mi.mouseData   = kXData[btn];
+    in[n].mi.dwExtraInfo = MAYOUS_TAG;
+    ++n;
+
+    if (from.x != to.x || from.y != to.y) fill_move(&in[n++], to);
+
+    SendInput((UINT)n, in, sizeof(INPUT));
+}
+
 static void emit_click(int btn)
 {
     INPUT in[2];
@@ -201,6 +265,7 @@ void chord_pump(void)
         case Q_DOWN:  emit_button(it.btn, TRUE);     break;
         case Q_UP:    emit_button(it.btn, FALSE);    break;
         case Q_KEYS:  emit_keys(it.steps, it.nsteps);break;
+        case Q_DRAG_START: emit_drag_start(it.btn, it.from, it.to); break;
         case Q_HWHEEL:
             /* このプロセスは WH_MOUSE_LL を保持しているため、自分で SendInput
                してもホイールだけは OS に捨てられる(詳細は agent.c 冒頭)。 */
@@ -244,13 +309,21 @@ static void pfx_set(int b, PfxState st)
     g_pfx[b].t0 = GetTickCount64();
 }
 
-/* 保留をやめ、本物の押下として世に出す(ドラッグ・長押しの救済) */
-static void pfx_promote(int b)
+/* 保留をやめ、本物の押下として世に出す(ドラッグ・長押しの救済)。
+   now を渡すと「押した場所で押して、今の場所まで動かした」ことにする。
+   NULL なら今のカーソル位置でそのまま押す。 */
+static void pfx_promote_at(int b, const POINT *now)
 {
     if (g_pfx[b].st != PS_PENDING) return;
     hold_timer_kill(b);
     pfx_set(b, PS_PASSTHRU);
-    inject_button(b, TRUE);
+    if (now) q_push_drag(b, g_pfx[b].anchor, *now);
+    else     inject_button(b, TRUE);
+}
+
+static void pfx_promote(int b)
+{
+    pfx_promote_at(b, NULL);
 }
 
 static void fire_action(const Action *a, int wheelAmount)
@@ -494,7 +567,7 @@ static BOOL on_move(const MSLLHOOKSTRUCT *m)
         if (g_pfx[b].st != PS_PENDING) continue;
         if (abs(m->pt.x - g_pfx[b].anchor.x) > g_dragThresh ||
             abs(m->pt.y - g_pfx[b].anchor.y) > g_dragThresh)
-            pfx_promote(b);               /* ドラッグを始めた -> 本物として通す */
+            pfx_promote_at(b, &m->pt);    /* ドラッグを始めた -> 押した場所から通す */
     }
     return FALSE;                         /* 移動は絶対に殺さない */
 }
