@@ -14,7 +14,7 @@
 #include <windows.h>
 
 #define MAYOUS_APPNAME      L"Mayous"
-#define MAYOUS_VERSION      L"v5"
+#define MAYOUS_VERSION      L"v6"
 #define MAYOUS_WNDCLASS     L"MayousHiddenWnd"
 #define MAYOUS_AGENT_CLASS  L"MayousWheelAgentWnd"
 #define MAYOUS_MUTEX        L"Local\\MayousSingleInstance_{7A1C4E2B-9D3F-4A55-8C10-2E6B0F9D4A31}"
@@ -90,6 +90,15 @@ typedef enum { THEME_SYSTEM = 0, THEME_LIGHT, THEME_DARK } ThemeMode;
 /* ---------------- 設定 ---------------- */
 
 #define MAX_EXCLUDE 2048
+
+/* 注入したキーを押しておく時間。キーボードフックで待ち受けるアプリは
+   押下の瞬間に気付くので何 ms でも構わないが、GetAsyncKeyState を一定間隔で
+   見に行く作りのアプリは、押している時間がその間隔より短いと丸ごと
+   取りこぼす。拡大鏡のように毎周期で重い描画をするアプリだと間隔が
+   100ms 前後まで伸びることがあるため、既定はそれを超える値にしてある。 */
+#define KEY_HOLD_MS_DEFAULT 120
+#define KEY_HOLD_MS_MIN     1
+#define KEY_HOLD_MS_MAX     2000
 
 typedef struct {
     BOOL   enabled;

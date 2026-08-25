@@ -28,6 +28,7 @@ public static class UI {
   [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll", EntryPoint="PostMessageW")] public static extern bool Post(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll", SetLastError=true)] static extern uint SendInput(uint n, INPUT[] p, int cb);
   [DllImport("user32.dll")] static extern int GetSystemMetrics(int i);
@@ -94,6 +95,17 @@ function Find-ProcWnd([uint32]$procId, [string]$cls) {
     return $true }
   [UI]::EnumWindows($cb, [IntPtr]::Zero) | Out-Null
   return $script:uiHit
+}
+
+# クラス名だけで探す(PyInstaller の onefile のように、窓が子プロセス側にある場合用)
+function Find-WndByClass([string]$cls) {
+  $script:uiHit2 = [IntPtr]::Zero; $script:uiCls2 = $cls
+  $cb = [UI+EnumProc]{ param($h,$p)
+    $sb = New-Object Text.StringBuilder 256; [UI]::GetClassNameW($h,$sb,256) | Out-Null
+    if ($sb.ToString() -eq $script:uiCls2) { $script:uiHit2 = $h; return $false }
+    return $true }
+  [UI]::EnumWindows($cb, [IntPtr]::Zero) | Out-Null
+  return $script:uiHit2
 }
 
 function Get-MayousProc {

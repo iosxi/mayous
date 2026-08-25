@@ -354,9 +354,10 @@ L"RightHoldTimeoutMs=0\r\n"
 L"Side1HoldTimeoutMs=0\r\n"
 L"Side2HoldTimeoutMs=0\r\n"
 L"\r\n"
-L"; 注入したキーを押しておく時間(ms)。短すぎると、キーの状態を見に行く方式の\r\n"
-L"; アプリ(ゲームや拡大鏡など)が取りこぼす。\r\n"
-L"KeyHoldMs=40\r\n"
+L"; 注入したキーを押しておく時間(ms)。短すぎると、キーの状態を一定間隔で\r\n"
+L"; 見に行く方式のアプリ(ゲームや拡大鏡など)が、間隔の隙間に収まった押下を\r\n"
+L"; 丸ごと取りこぼす。長くしすぎると文字入力欄でキーリピートが始まる。\r\n"
+L"KeyHoldMs=120\r\n"
 L"\r\n"
 L"; フルスクリーンのアプリが前面のあいだは自動で停止する(ゲーム対策)\r\n"
 L"SuspendOnFullscreen=1\r\n"
@@ -445,6 +446,7 @@ void cfg_load(void)
     g_cfg.enabled             = GetPrivateProfileIntW(L"General", L"Enabled", 1, g_cfg.iniPath) != 0;
     g_cfg.dragThreshold       = GetPrivateProfileIntW(L"General", L"DragThreshold", 0, g_cfg.iniPath);
     g_cfg.suspendOnFullscreen = GetPrivateProfileIntW(L"General", L"SuspendOnFullscreen", 1, g_cfg.iniPath) != 0;
+    g_cfg.keyHoldMs           = GetPrivateProfileIntW(L"General", L"KeyHoldMs", KEY_HOLD_MS_DEFAULT, g_cfg.iniPath);
 
     {   /* 設定画面の配色: system / light / dark */
         WCHAR t[32];
@@ -457,6 +459,11 @@ void cfg_load(void)
 
     if (g_cfg.dragThreshold < 0)   g_cfg.dragThreshold = 0;
     if (g_cfg.dragThreshold > 200) g_cfg.dragThreshold = 200;
+
+    /* 短すぎると GetAsyncKeyState を見に行く作りのアプリに取りこぼされ、
+       長すぎると文字入力欄でキーリピートが始まる。 */
+    if (g_cfg.keyHoldMs < KEY_HOLD_MS_MIN) g_cfg.keyHoldMs = KEY_HOLD_MS_MIN;
+    if (g_cfg.keyHoldMs > KEY_HOLD_MS_MAX) g_cfg.keyHoldMs = KEY_HOLD_MS_MAX;
 
     for (b = 0; b < BTN_COUNT; ++b) {
         int def = (b == BTN_L) ? 200 : 0;
