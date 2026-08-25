@@ -229,7 +229,33 @@ VK を `GetAsyncKeyState` で走査しており、Python のオーバーヘッ�
 `hold_end()` を呼びます。押しっぱなしのまま mayous を終了させても離されることを
 `tools\test_hold_release.ps1` で検証しています。
 
-### 7. ダークモードは非公開 API に頼るしかない
+### 7. 子ウィンドウは「先に作ったものほど上」
+
+設定画面で、Alt+Tab のウィンドウ一覧が重なって離れた直後に、グループ枠の中の
+コントロールがまとめて消える、という報告があった。`IsWindowVisible` で数えると
+53 個すべて可視のままだったので、**消えたのではなく塗り潰されていた**。
+
+原因は Z 順と `WS_CLIPSIBLINGS` の組み合わせ。`EnumChildWindows` は Z 順に上から
+返すが、その並びは**作成順そのもの**だった ── つまり子ウィンドウは
+**先に作ったものほど上**になる。タブ枠もグループ枠も中身より先に作るので、
+放っておくと中身の上に乗る。
+
+- `WS_CLIPSIBLINGS` **無し**（元の状態）… 中身は上の枠を無視して描けるので普通は
+  見える。しかし枠が所有者描画で自分の矩形を `FillRect` すると、中身ごと
+  塗り潰す。中身の更新領域は既に検証済みなので描き直されず、消えたままになる。
+- `WS_CLIPSIBLINGS` **有り**だけ付ける … 今度は「上に乗った枠」に切り取られて
+  中身が最初から一切描かれない（実際にこれで全部消えた）。
+
+正解は**両方**。`sink_containers()` で枠とタブを `HWND_BOTTOM` へ沈めてから
+`WS_CLIPSIBLINGS` を付ける。枠が下・中身が上、かつ互いに領域を侵さない状態になる。
+
+> Z 順を直さずに `WS_CLIPCHILDREN` を親へ足しても解決しない。あれは
+> 「親が子の領域を塗らない」だけで、兄弟同士の重なりには何の関係もない。
+
+再現と確認は `tools\dbg_settings_paint.ps1`。子ウィンドウの可視状態を前後で比べ、
+実画面から切り出す（`PrintWindow` は強制的に描き直させてしまうので使えない）。
+
+### 8. ダークモードは非公開 API に頼るしかない
 
 Win32 の古いコントロールにはダークモードの公式 API がありません。Windows 自身も
 uxtheme.dll の**序数エクスポート**（名前が無く番号でしか呼べない関数）を使っています。
@@ -336,6 +362,7 @@ powershell -ExecutionPolicy Bypass -File tools\stress.ps1
 | `tools\test_hold_release.ps1` | `hold:` のキーが必ず離されること |
 | `tools\test_keydur.ps1` | 注入したキーが実際に何 ms 押されているかの実測 |
 | `tools\test_autorepeat.ps1` | 注入した押下がオートリピートしないことの確認 |
+| `tools\dbg_settings_paint.ps1` | 窓が重なって離れたあと設定画面が描き直されるか |
 | `tools\test_zoompon_e2e.ps1` | 実物の zoom-pon を相手にした反応率（要 zoom-pon） |
 | `tools\shot_settings.ps1` | 設定画面のキャプチャ（目視確認用） |
 

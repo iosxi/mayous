@@ -184,7 +184,14 @@ static void label_to_spec(const WCHAR *label, WCHAR *out, int cch)
 static HWND mk(HWND parent, const WCHAR *cls, const WCHAR *text, DWORD style,
                int x, int y, int w, int h, int id)
 {
-    HWND c = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style,
+    /* WS_CLIPSIBLINGS は必須。
+       これが無いと、あるコントロールの DC が「上に載っている兄弟」の領域まで
+       含んでしまい、そこへ塗ると兄弟を消してしまう。グループ枠は所有者描画で
+       自分の矩形を FillRect するので、枠の中にあるチェックボックスや入力欄が
+       まとめて消える(Alt+Tab の一覧が重なって離れた直後に発生した)。
+       消えたコントロールは非表示になったのではなく、塗り潰されただけ。 */
+    HWND c = CreateWindowExW(0, cls, text,
+                             WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | style,
                              U(x), U(y), U(w), U(h), parent,
                              (HMENU)(INT_PTR)id, g_inst, NULL);
     if (c) {
@@ -423,12 +430,38 @@ static void add_row(HWND hwnd, const WCHAR *label, int y,
 }
 
 /* グループ枠。ダークのときはテーマが効かないので SS_OWNERDRAW にして自分で描く。 */
+/* 中身を囲む枠。作った順に Z 順の下へ送る必要があるので、handle を控えておく
+   (理由は sink_containers() を参照)。 */
+static HWND g_group[4];
+static int  g_groupN;
+
 static void mk_group(HWND hwnd, const WCHAR *title, int x, int y, int w, int h)
 {
-    if (theme_is_dark())
-        mk(hwnd, L"STATIC", title, SS_OWNERDRAW, x, y, w, h, IDC_GROUP);
-    else
-        mk(hwnd, L"BUTTON", title, BS_GROUPBOX, x, y, w, h, 0);
+    HWND g = theme_is_dark()
+           ? mk(hwnd, L"STATIC", title, SS_OWNERDRAW, x, y, w, h, IDC_GROUP)
+           : mk(hwnd, L"BUTTON", title, BS_GROUPBOX,  x, y, w, h, IDC_GROUP);
+    if (g && g_groupN < (int)ARRAYSIZE(g_group)) g_group[g_groupN++] = g;
+}
+
+/* タブとグループ枠を、中に載っているコントロールより下へ沈める。
+ *
+ *  子ウィンドウは「先に作ったものほど Z 順で上」になる。タブ枠もグループ枠も
+ *  中身より先に作るので、放っておくと中身の上に乗ってしまう。
+ *  WS_CLIPSIBLINGS を付けた状態でそれをやると、上に乗った枠に切り取られて
+ *  中身が一切描かれない。逆に WS_CLIPSIBLINGS を外すと、今度は枠が
+ *  自分の矩形を塗るときに中身を塗り潰してしまい、Alt+Tab の一覧が重なって
+ *  離れた直後などに中身が消える。
+ *  正しいのは「枠を下、中身を上」に並べたうえで WS_CLIPSIBLINGS を付けること。 */
+static void sink_containers(void)
+{
+    int i;
+    for (i = 0; i < g_groupN; ++i)
+        if (g_group[i])
+            SetWindowPos(g_group[i], HWND_BOTTOM, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    if (g_tab)                          /* タブ枠が最下段 */
+        SetWindowPos(g_tab, HWND_BOTTOM, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 /* チェックボックス。
@@ -474,6 +507,8 @@ static void build(HWND hwnd)
     const int gw = WIN_W - m * 2;
     int gy, y, t, suf, b, i;
     TCITEMW ti;
+
+    g_groupN = 0;               /* 作り直すたびに枠の控えも取り直す */
 
     /* --- タブ --- */
     g_tab = CreateWindowExW(0, WC_TABCONTROLW, L"",
@@ -603,6 +638,7 @@ static void build(HWND hwnd)
                      SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
+    sink_containers();
     show_tab(0);
     TabCtrl_SetCurSel(g_tab, 0);
 }
@@ -617,6 +653,8 @@ static void rebuild(HWND hwnd)
     ZeroMemory(g_hHold, sizeof(g_hHold));
     g_hApply = NULL;
     ZeroMemory(g_lWarn, sizeof(g_lWarn));
+    ZeroMemory(g_group, sizeof(g_group));
+    g_groupN = 0;
     make_font();
     build(hwnd);
     load_values();
