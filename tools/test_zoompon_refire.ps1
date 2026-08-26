@@ -1,12 +1,10 @@
-﻿# test_zoompon_e2e.ps1 - 本物の zoom-pon を相手に、mayous のキーが確実に届くかを数える
+﻿# test_zoompon_refire.ps1 - 右を離さずに左クリックを繰り返したとき、
+#   2 回目以降も zoom-pon に届くかを本物で数える(利用者のテストケース)
 #
 #   zoom-pon は「押すたびに固定」なので、1 回の同時押しで拡大が ON/OFF する。
 #   拡大窓(ZoomPonHost)の表示状態を見れば、届いたかどうかが分かる。
 #   利用者の設定を汚さないよう、exe と config を一時フォルダへ複製して動かす。
-#   -TriggerVk は zoom-pon 側のトリガー。既定は 'a'(0x41=65)。
-#   利用者の config.json を読むと、そちらの都合で結果が変わってしまうので
-#   このテストが自分で書く(実機の設定は一切触らない)。
-param([string]$Action = 'a', [int]$KeyHoldMs = 40, [int]$Shots = 12, [int]$TriggerVk = 65)
+param([string]$Action = 'f13', [int]$KeyHoldMs = 120, [int]$Shots = 10)
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'uilib.ps1')
@@ -26,7 +24,8 @@ foreach ($d in @($zdir, $mdir)) {
     New-Item -ItemType Directory -Path $d | Out-Null
 }
 Copy-Item (Join-Path $zsrc 'zoom-pon.exe') $zdir
-('{"trigger_vks":[' + $TriggerVk + '],"zoom":2.0,"lock_mode":"toggle","show_cursor":false}') |
+# 利用者のテストケースどおり F13 をトリガーにする(VK 0x7C = 124)
+'{"trigger_vks":[124],"zoom":2.0,"lock_mode":"toggle","show_cursor":false}' |
     Set-Content -Path (Join-Path $zdir 'config.json') -Encoding ascii
 Copy-Item (Join-Path $build 'mayous.exe')  $mdir
 @"
@@ -69,13 +68,16 @@ function Zoomed {
     return [UI]::IsWindowVisible($h)
 }
 
+Write-Host '右クリックを押したまま、左クリックを繰り返す'
+[ZP]::RDown()
+W 300
 $ok = 0
 $seq = @()
 $onN = 0; $onOk = 0; $offN = 0; $offOk = 0
 for ($i = 1; $i -le $Shots; $i++) {
     $before = Zoomed
-    [ZP]::RDown(); W 60; [ZP]::LDown(); W 40; [ZP]::LUp(); W 60; [ZP]::RUp()
-    W 500
+    [ZP]::LDown(); W 70; [ZP]::LUp()
+    W 700
     $after = Zoomed
     # 「押すたびに固定」なので、1 回の同時押しで必ず反転するのが正しい
     if ($after -ne $before) { $ok++; $seq += '○' } else { $seq += '×' }
@@ -83,6 +85,8 @@ for ($i = 1; $i -le $Shots; $i++) {
     else         { $offN++; if ($after -ne $before) { $offOk++ } }
     W 300
 }
+[ZP]::RUp()
+W 400
 Write-Host ('  ' + ($seq -join ' ') + '   (○=反転した ×=反応なし)')
 Write-Host ("  拡大していない状態から: {0}/{1}   拡大中から: {2}/{3}" -f $offOk,$offN,$onOk,$onN)
 

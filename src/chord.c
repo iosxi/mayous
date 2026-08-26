@@ -409,7 +409,9 @@ static void inject_keys(const Action *a)      { q_push(Q_KEYS, 0, 0, a); }
 typedef struct {
     KeyStep   step;
     BOOL      down;
-    ULONGLONG t0;      /* 押した時刻。最低押下時間の判定に使う */
+    ULONGLONG t0;        /* 押した時刻。最低押下時間の判定に使う */
+    BOOL      repress;   /* いったん離して、押し直すのを待っている */
+    KeyStep   next;      /* 押し直すキー */
 } HoldState;
 
 static HoldState g_hold[BTN_COUNT];
@@ -432,19 +434,50 @@ static void hold_rel_timer_kill(int pfx)
    (終了やデスクトップ切替を待たせるわけにはいかない)。 */
 static void hold_release_now(int pfx)
 {
-    if (!g_hold[pfx].down) return;
     hold_rel_timer_kill(pfx);
+    g_hold[pfx].repress = FALSE;
+    if (!g_hold[pfx].down) return;
     g_hold[pfx].down = FALSE;
     hold_push(&g_hold[pfx].step, FALSE);
 }
 
-static void hold_begin(int pfx, const Action *a)
+static void hold_press_now(int pfx, const KeyStep *s)
 {
-    hold_release_now(pfx);          /* 押しっぱなし中の再発火 = 押し直し */
-    g_hold[pfx].step = a->steps[0];
+    g_hold[pfx].step = *s;
     g_hold[pfx].down = TRUE;
     g_hold[pfx].t0   = GetTickCount64();
     hold_push(&g_hold[pfx].step, TRUE);
+}
+
+/* プレフィクスを押したまま、同じ組み合わせをもう一度成立させた場合。
+ *
+ *  ここで「離して即座に押し直す」と、離上と押下が同じ chord_pump() で
+ *  連続して出るため、その隙間は 1ms 未満になる。キーの状態を一定間隔で
+ *  見に行く作りのアプリからは離した瞬間が一切見えず、押しっぱなしのまま
+ *  にしか映らない ── つまり 2 回目以降が無かったことになる。
+ *  (実測: 左クリック 4 回に対して押し直しは 3 回しか観測されなかった。
+ *   1ms 間隔で見ても取りこぼす。tools\test_refire.ps1)
+ *
+ *  そこで、離してから KeyHoldMs だけ空けて押し直す。押している時間に
+ *  下限が要るのと同じ理由で、離している時間にも下限が要る。
+ */
+static void hold_begin(int pfx, const Action *a)
+{
+    if (g_hold[pfx].repress) {          /* 間を空けている最中の再発火 */
+        g_hold[pfx].next = a->steps[0]; /* 押し直す中身だけ差し替える */
+        return;
+    }
+    if (g_hold[pfx].down) {
+        hold_release_now(pfx);          /* ここで repress は falseに戻る */
+        g_hold[pfx].next    = a->steps[0];
+        g_hold[pfx].repress = TRUE;
+        if (g_hwnd)
+            SetTimer(g_hwnd, TIMER_KEYREL_BASE + pfx, (UINT)g_cfg.keyHoldMs, NULL);
+        else
+            hold_press_now(pfx, &a->steps[0]);
+        return;
+    }
+    hold_press_now(pfx, &a->steps[0]);
 }
 
 /* プレフィクスが離された。まだ KeyHoldMs に満たなければ、その分だけ待ってから離す。 */
@@ -452,6 +485,20 @@ static void hold_end(int pfx)
 {
     ULONGLONG el;
     int rest;
+
+    /* 押し直しを待っている途中で離された。約束したぶんは普通に叩いて返す
+       (捨てると、利用者のクリックが 1 回まるごと無かったことになる)。 */
+    if (g_hold[pfx].repress) {
+        Action tmp;
+        hold_rel_timer_kill(pfx);
+        g_hold[pfx].repress = FALSE;
+        ZeroMemory(&tmp, sizeof(tmp));
+        tmp.kind     = ACT_KEYS;
+        tmp.nsteps   = 1;
+        tmp.steps[0] = g_hold[pfx].next;
+        inject_keys(&tmp);
+        return;
+    }
 
     if (!g_hold[pfx].down) return;
     el = GetTickCount64() - g_hold[pfx].t0;
@@ -468,7 +515,15 @@ static void hold_end_all(void)
 
 void chord_key_release_tick(int pfx)
 {
-    if (pfx >= 0 && pfx < BTN_COUNT) hold_release_now(pfx);
+    if (pfx < 0 || pfx >= BTN_COUNT) return;
+    if (g_hold[pfx].repress) {          /* 間を空け終わった -> 押し直す */
+        KeyStep s = g_hold[pfx].next;
+        hold_rel_timer_kill(pfx);
+        g_hold[pfx].repress = FALSE;
+        hold_press_now(pfx, &s);
+        return;
+    }
+    hold_release_now(pfx);
 }
 
 /* ---------------- タイマー ---------------- */
