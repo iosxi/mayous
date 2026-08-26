@@ -262,10 +262,27 @@ VK を `GetAsyncKeyState` で走査しており、Python のオーバーヘッ�
 | 修正後・上下交互（`a`/`b`） | 約 9ms | **約 10ms** |
 | 上だけ連続（`a` の押し直し） | 約 6ms | 約 128ms（設計どおり） |
 
-同じキーの押し直しは今までどおり `KeyHoldMs` だけ間を空けます。ここを
-削ると上の表の「3 回」に戻るので、速さが欲しい場合は `KeyHoldMs` 自体を
-下げてください（ポーリング方式のアプリを使わないなら 40ms 程度でも実害は
-ありません）。
+**同じキーの押し直しは、間隔を選べるようにした。** ここは押している時間
+（`KeyHoldMs`）とは要求が別なので、設定を分けて `RepressGapMs` にした。
+設定画面の「同じキーの押し直し」で **120 / 80 / 40 / 20ms** の 4 段階から選ぶ
+（`config.c` の `kRepressGapMs[]`。ini に段階以外の値が書かれていたら
+`cfg_repress_gap_snap()` が一番近い段階へ丸める）。実測:
+
+| `RepressGapMs` | 2 回目以降の遅れ |
+|---|---|
+| 120（既定） | 約 127ms |
+| 80 | 約 96ms |
+| 40 | 約 49ms |
+| 20 | 約 34ms |
+
+**20ms を選んでも 34ms かかる。** 待ちは `SetTimer` で測っており、その分解能が
+約 15.6ms あるためで、ここが実質の下限になる。これ以上詰めるには待ち方自体を
+変えるしかない。
+
+短くすると、242f6cb で直した「左クリック 4 回に対して押下 3 回」に近づく。
+どこまで詰められるかは相手のアプリ次第なので、既定は 120ms のままにして
+選択制にした。`tools	est_repress_gap.ps1` がラジオボタンから ini まで
+4 段階すべて書けることを確かめている。
 
 > **相手側の直し方も書いておく。** `GetAsyncKeyState` の戻り値は
 > `0x8000`（いま押されているか）だけでなく `0x0001`（**前回この関数を
@@ -482,6 +499,7 @@ powershell -ExecutionPolicy Bypass -File tools\stress.ps1
 | `tools\test_asyncbit0.py` | GetAsyncKeyState の 0x0001 で短い押下を拾えるか |
 | `tools\test_zoompon_e2e.ps1` | 実物の zoom-pon を相手にした反応率（要 zoom-pon） |
 | `tools\test_wheel_latency.ps1` | 同時押しのキーがホイールから何 ms 遅れて出るか |
+| `tools\test_repress_gap.ps1` | 「同じキーの押し直し」のラジオが ini へ書けるか |
 | `tools\shot_settings.ps1` | 設定画面のキャプチャ（目視確認用） |
 
 ### テストを書くときの落とし穴

@@ -251,6 +251,22 @@ void cfg_chord_ini_key(int pfx, int suf, WCHAR *out, int cch)
     lstrcatW(out, kSufIni[suf]);
 }
 
+/* 押し直しの間隔として選べる値。長いほどポーリング方式のアプリに確実で、
+   短いほど体感が速い。設定画面のラジオボタンもこの並びをそのまま使う。 */
+const int kRepressGapMs[REPRESS_GAP_STEPS] = { 120, 80, 40, 20 };
+
+/* ini に段階以外の値が書かれていても弾かず、一番近い段階へ丸める。 */
+int cfg_repress_gap_snap(int ms)
+{
+    int i, best = 0, bestd = -1;
+    for (i = 0; i < REPRESS_GAP_STEPS; ++i) {
+        int d = ms - kRepressGapMs[i];
+        if (d < 0) d = -d;
+        if (bestd < 0 || d < bestd) { bestd = d; best = i; }
+    }
+    return kRepressGapMs[best];
+}
+
 void cfg_single_ini_key(int btn, WCHAR *out, int cch)
 {
     lstrcpynW(out, kBtnIni[btn], cch);
@@ -362,6 +378,14 @@ L"; 短すぎると、キーの状態を一定間隔で見に行く方式のア�
 L"; 間隔の隙間に収まった押下を丸ごと取りこぼす。\r\n"
 L"KeyHoldMs=120\r\n"
 L"\r\n"
+L"; 同じキーを押し直すときに空ける時間(ms)。120 / 80 / 40 / 20 から選ぶ。\r\n"
+L"; ボタンを押したまま同じ組み合わせを繰り返すと、いったん離して押し直す。\r\n"
+L"; ここで間を空けないと、キーの状態を一定間隔で見に行く方式のアプリからは\r\n"
+L"; 離した瞬間が見えず、2 回目以降が無かったことになる。逆にこの時間は\r\n"
+L"; そのまま体感の遅れになるので、相手に合わせて選ぶ。\r\n"
+L"; 押し直す先が別のキー(ホイール上下に別々のキーなど)なら間は空けない。\r\n"
+L"RepressGapMs=120\r\n"
+L"\r\n"
 L"; フルスクリーンのアプリが前面のあいだは自動で停止する(ゲーム対策)\r\n"
 L"SuspendOnFullscreen=1\r\n"
 L"\r\n"
@@ -452,6 +476,8 @@ void cfg_load(void)
     g_cfg.dragThreshold       = GetPrivateProfileIntW(L"General", L"DragThreshold", 0, g_cfg.iniPath);
     g_cfg.suspendOnFullscreen = GetPrivateProfileIntW(L"General", L"SuspendOnFullscreen", 1, g_cfg.iniPath) != 0;
     g_cfg.keyHoldMs           = GetPrivateProfileIntW(L"General", L"KeyHoldMs", KEY_HOLD_MS_DEFAULT, g_cfg.iniPath);
+    g_cfg.repressGapMs        = cfg_repress_gap_snap(
+        GetPrivateProfileIntW(L"General", L"RepressGapMs", REPRESS_GAP_MS_DEFAULT, g_cfg.iniPath));
 
     {   /* 設定画面の配色: system / light / dark */
         WCHAR t[32];

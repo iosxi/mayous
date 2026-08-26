@@ -7,7 +7,8 @@
 #
 #     .\tools\test_wheel_latency.ps1
 #     .\tools\test_wheel_latency.ps1 -Baseline build\latold   # 昔の exe と比べる
-param([int]$N = 8, [int]$Gap = 500, [int]$KeyHoldMs = 120, [string]$Baseline = '')
+param([int]$N = 8, [int]$Gap = 500, [int]$KeyHoldMs = 120,
+      [int]$RepressGapMs = 120, [string]$Baseline = '')
 
 $ErrorActionPreference = 'Stop'
 $root  = Split-Path -Parent $PSScriptRoot
@@ -41,6 +42,7 @@ function New-TestDir([string]$dir, [string]$src) {
 Enabled=1
 SuspendOnFullscreen=0
 KeyHoldMs=$KeyHoldMs
+RepressGapMs=$RepressGapMs
 RightHoldTimeoutMs=0
 [Chords]
 RightThenWheelUp=a
@@ -83,5 +85,5 @@ if ($Baseline -ne '') {
 
 # 上下交互 = 押しているキーとは別のキー。間を空けずに入れ替わるので速いはず。
 Measure-Case $now '今のビルド: 上下交互(a/b)' @("$N", "$Gap")
-# 上だけ連続 = 同じキーの押し直し。KeyHoldMs だけ間を空けるので、そのぶん遅れる。
-Measure-Case $now '今のビルド: 上だけ連続(a)' @("$N", "$Gap", '-same')
+# 上だけ連続 = 同じキーの押し直し。RepressGapMs だけ間を空けるので、そのぶん遅れる。
+Measure-Case $now ("今のビルド: 上だけ連続(a)  RepressGapMs=$RepressGapMs") @("$N", "$Gap", '-same')

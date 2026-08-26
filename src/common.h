@@ -14,7 +14,7 @@
 #include <windows.h>
 
 #define MAYOUS_APPNAME      L"Mayous"
-#define MAYOUS_VERSION      L"v11"
+#define MAYOUS_VERSION      L"v12"
 #define MAYOUS_WNDCLASS     L"MayousHiddenWnd"
 #define MAYOUS_AGENT_CLASS  L"MayousWheelAgentWnd"
 #define MAYOUS_MUTEX        L"Local\\MayousSingleInstance_{7A1C4E2B-9D3F-4A55-8C10-2E6B0F9D4A31}"
@@ -105,12 +105,25 @@ typedef enum { THEME_SYSTEM = 0, THEME_LIGHT, THEME_DARK } ThemeMode;
 #define KEY_HOLD_MS_MIN     1
 #define KEY_HOLD_MS_MAX     2000
 
+/* 同じキーを押し直すときに空ける時間。
+   プレフィクスを押したまま同じ組み合わせをもう一度成立させると、いったん
+   離してから押し直すことになる。ここで間を空けないと、キーの状態を一定間隔で
+   見に行く作りのアプリからは離した瞬間が見えず、2 回目以降が無かったことに
+   なる(押している時間に下限が要るのと同じ理由)。
+   一方この時間はそのまま体感の遅れになるので、相手に合わせて選べるように
+   してある。押し直す先が別のキーなら間は空けない(chord.c の hold_begin)。
+   選べるのは下の 4 段階だけ。ini に他の値が書かれていたら一番近いものへ丸める。 */
+#define REPRESS_GAP_STEPS      4
+#define REPRESS_GAP_MS_DEFAULT 120
+extern const int kRepressGapMs[REPRESS_GAP_STEPS];   /* 120 / 80 / 40 / 20 */
+
 typedef struct {
     BOOL   enabled;
     int    dragThreshold;              /* px, 0 = システム値(SM_CXDRAG)を使う */
     int    holdTimeoutMs[BTN_COUNT];   /* 0 = 無効(離すまで保留し続ける)     */
     BOOL   suspendOnFullscreen;
     int    keyHoldMs;                  /* 注入したキーを押しておく時間(ms) */
+    int    repressGapMs;               /* 同じキーを押し直すまで空ける時間(ms) */
     ThemeMode theme;                   /* 設定画面の配色 */
     Action chord[CH_COUNT];
     Action single[BTN_COUNT];          /* 単独クリックの置き換え(サイドボタン用) */
@@ -136,6 +149,7 @@ void  cfg_single_ini_key(int btn, WCHAR *out, int cch);
 const WCHAR *cfg_btn_name(int btn);        /* "左クリック" など       */
 const WCHAR *cfg_suf_name(int suf);        /* "ホイール上" など       */
 const WCHAR *cfg_hold_ini_key(int btn);    /* 長押し判定の ini キー   */
+int   cfg_repress_gap_snap(int ms);        /* 一番近い段階の値へ丸める */
 
 /* chord.c */
 void  chord_init(HWND hwnd);

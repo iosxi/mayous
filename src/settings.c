@@ -34,6 +34,7 @@
 #define IDC_FULLSCREEN   1102
 #define IDC_HOLD_BASE    1110            /* +btn */
 #define IDC_DRAG         1119
+#define IDC_GAP_BASE     1140            /* +段階(0..REPRESS_GAP_STEPS-1) */
 #define IDC_EXCLUDE      1120
 #define IDC_OK           1130
 #define IDC_CANCEL       1131
@@ -294,6 +295,10 @@ static void load_values(void)
         if (g_hHold[b]) SetDlgItemInt(g_wnd, IDC_HOLD_BASE + b, (UINT)g_cfg.holdTimeoutMs[b], FALSE);
     SetDlgItemInt(g_wnd, IDC_DRAG, (UINT)g_cfg.dragThreshold, FALSE);
 
+    for (b = 0; b < REPRESS_GAP_STEPS; ++b)
+        CheckDlgButton(g_wnd, IDC_GAP_BASE + b,
+                       (kRepressGapMs[b] == g_cfg.repressGapMs) ? BST_CHECKED : BST_UNCHECKED);
+
     /* ";a.exe;b.exe;" -> 1行1件 */
     dst = buf;
     for (src = g_cfg.exclude; *src; ++src) {
@@ -375,6 +380,12 @@ static BOOL save_values(void)
                           (int)GetDlgItemInt(g_wnd, IDC_HOLD_BASE + b, &ok, FALSE));
     cfg_write_int(L"General", L"DragThreshold", (int)GetDlgItemInt(g_wnd, IDC_DRAG, &ok, FALSE));
 
+    for (b = 0; b < REPRESS_GAP_STEPS; ++b)
+        if (IsDlgButtonChecked(g_wnd, IDC_GAP_BASE + b) == BST_CHECKED) {
+            cfg_write_int(L"General", L"RepressGapMs", kRepressGapMs[b]);
+            break;
+        }
+
     /* 1行1件 / カンマ区切りのどちらでも受け取り、カンマ区切りで保存する */
     GetWindowTextW(g_hExclude, raw, ARRAYSIZE(raw));
     dst = list;
@@ -408,8 +419,9 @@ static BOOL save_values(void)
 #define TAB_ROWS  7
 /* 左クリックタブには注意書きを 2 行入れるので、その分だけ余白を持たせる */
 #define TAB_H     (32 + TAB_ROWS * ROW_H + 22)
-/* 動作: 上余白22 + チェック3行(22*3) + 長押し2行(26*2) + 距離1行(26) + 下余白10 */
-#define GRP2_H    (22 + 22 * 2 + 26 * 3 + 10)
+/* 動作: 上余白22 + チェック2行(22*2) + 長押し2行(26*2) + 距離1行(26)
+        + 押し直し1行(26) + その説明1行(22) + 下余白10 */
+#define GRP2_H    (22 + 22 * 2 + 26 * 4 + 22 + 10)
 #define GRP3_H     82
 
 static void add_row(HWND hwnd, const WCHAR *label, int y,
@@ -482,6 +494,17 @@ static HWND mk_check(HWND hwnd, const WCHAR *text, int x, int y, int w, int id)
     mk(hwnd, L"STATIC", text, SS_LEFT | SS_CENTERIMAGE | SS_NOTIFY,
        x + 22, y, w - 22, 20, id + CHECK_LABEL_OFFSET);
     return box;
+}
+
+/* ラジオボタン。理由も作りも mk_check() と同じ(文字は隣の STATIC に出す)。
+   BS_AUTORADIOBUTTON の自動排他はグループの並びに左右され、間に STATIC が
+   挟まると当てにならない。BN_CLICKED を拾って CheckRadioButton() で自分で
+   排他させるほうが確実なので、素の BS_RADIOBUTTON にしてある。 */
+static void mk_radio(HWND hwnd, const WCHAR *text, int x, int y, int w, int id)
+{
+    mk(hwnd, L"BUTTON", L"", BS_RADIOBUTTON | WS_TABSTOP, x, y + 1, 18, 18, id);
+    mk(hwnd, L"STATIC", text, SS_LEFT | SS_CENTERIMAGE | SS_NOTIFY,
+       x + 20, y, w - 20, 20, id + CHECK_LABEL_OFFSET);
 }
 
 /* タブは「中身の面」の背景を自分で塗ってくれないので、ダークでは
@@ -600,6 +623,20 @@ static void build(HWND hwnd)
                  m + 14 + 152, y, 48, 22, IDC_DRAG);
     mk(hwnd, L"STATIC", L"px    (長押し・距離とも 0 で 無効 / 自動)", SS_LEFT,
        m + 14 + 204, y + 4, 270, 20, 0);
+    y += ROW_H;
+
+    /* 同じキーを押し直すまでの間隔。長いほど確実、短いほど速い。
+       別のキーへ切り替わる場合は間を空けないので、ここは効かない。 */
+    mk(hwnd, L"STATIC", L"同じキーの押し直し", SS_LEFT, m + 14, y + 4, 148, 20, 0);
+    for (i = 0; i < REPRESS_GAP_STEPS; ++i) {
+        WCHAR lb[32];
+        wsprintfW(lb, L"%d ms", kRepressGapMs[i]);
+        mk_radio(hwnd, lb, m + 14 + 152 + i * 76, y, 72, IDC_GAP_BASE + i);
+    }
+    y += 22;
+    mk(hwnd, L"STATIC",
+       L"長いほど確実に届き、短いほど速く出ます。別のキーへ変わる場合は間を空けません。",
+       SS_LEFT, m + 14, y, gw - 28, 18, 0);
 
     gy += GRP2_H + 10;
 
@@ -714,12 +751,24 @@ static LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             do_capture(g_scmb[id - IDC_SREC_BASE]);
             return 0;
         }
-        /* チェックボックスの文字(隣の STATIC)が押された -> 本体へ渡す */
+        /* チェックボックス・ラジオボタンの文字(隣の STATIC)が押された
+           -> 本体へ渡す */
         if (note == STN_CLICKED &&
             (id == IDC_ENABLED    + CHECK_LABEL_OFFSET ||
-             id == IDC_FULLSCREEN + CHECK_LABEL_OFFSET)) {
+             id == IDC_FULLSCREEN + CHECK_LABEL_OFFSET ||
+             (id >= IDC_GAP_BASE + CHECK_LABEL_OFFSET &&
+              id <  IDC_GAP_BASE + CHECK_LABEL_OFFSET + REPRESS_GAP_STEPS))) {
             HWND box = GetDlgItem(hwnd, id - CHECK_LABEL_OFFSET);
             if (box) { SendMessageW(box, BM_CLICK, 0, 0); SetFocus(box); }
+            return 0;
+        }
+
+        /* 押し直しの間隔。素の BS_RADIOBUTTON なので排他は自分でやる */
+        if (note == BN_CLICKED &&
+            id >= IDC_GAP_BASE && id < IDC_GAP_BASE + REPRESS_GAP_STEPS) {
+            CheckRadioButton(hwnd, IDC_GAP_BASE,
+                             IDC_GAP_BASE + REPRESS_GAP_STEPS - 1, id);
+            set_dirty(TRUE);
             return 0;
         }
 

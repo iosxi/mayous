@@ -470,8 +470,10 @@ static void hold_press_now(int pfx, const KeyStep *s)
  *  (実測: 左クリック 4 回に対して押し直しは 3 回しか観測されなかった。
  *   1ms 間隔で見ても取りこぼす。tools\test_refire.ps1)
  *
- *  そこで、離してから KeyHoldMs だけ空けて押し直す。押している時間に
+ *  そこで、離してから RepressGapMs だけ空けて押し直す。押している時間に
  *  下限が要るのと同じ理由で、離している時間にも下限が要る。
+ *  この時間はそのまま体感の遅れになるので、相手に合わせて 120/80/40/20ms
+ *  から選べるようにしてある(設定画面の「同じキーの押し直し」)。
  */
 static void hold_begin(int pfx, const Action *a)
 {
@@ -498,7 +500,7 @@ static void hold_begin(int pfx, const Action *a)
         if (!same || !g_hwnd) { hold_press_now(pfx, &a->steps[0]); return; }
         g_hold[pfx].next    = a->steps[0];
         g_hold[pfx].repress = TRUE;
-        SetTimer(g_hwnd, TIMER_KEYREL_BASE + pfx, (UINT)g_cfg.keyHoldMs, NULL);
+        SetTimer(g_hwnd, TIMER_KEYREL_BASE + pfx, (UINT)g_cfg.repressGapMs, NULL);
         return;
     }
     hold_press_now(pfx, &a->steps[0]);
