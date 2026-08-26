@@ -245,6 +245,28 @@ VK を `GetAsyncKeyState` で走査しており、Python のオーバーヘッ�
 間を空けている最中にプレフィクスが離された場合は、約束したぶんを
 普通のタップとして出します（捨てると利用者のクリックが 1 回まるごと消える）。
 
+**ただし、間が要るのは同じキーを押し直すときだけ。** 押しているキーと
+これから押すキーが違うなら、「前のキーが離れ、別のキーが押された」ことは
+ポーリング方式のアプリからも読めます。待つ理由が無いので、離上と押下を
+同じ `chord_pump()` で続けて出してしまいます（`step_same()` で判定）。
+
+これが効くのは、右クリック＋ホイール上に `a`、下に `b` のように
+**上下へ別々のキーを割り当てた場合**です。回すたびに 1 回分の間
+（`KeyHoldMs` = 既定 120ms）待たされていたのが、そのまま消えます。
+実測（`tools\test_wheel_latency.ps1`、ホイールを送ってから
+その押下がキーボードフックに見えるまでの時間）:
+
+| | 1 回目 | 2 回目以降 |
+|---|---|---|
+| 修正前・上下交互（`a`/`b`） | 約 9ms | **約 127ms** |
+| 修正後・上下交互（`a`/`b`） | 約 9ms | **約 10ms** |
+| 上だけ連続（`a` の押し直し） | 約 6ms | 約 128ms（設計どおり） |
+
+同じキーの押し直しは今までどおり `KeyHoldMs` だけ間を空けます。ここを
+削ると上の表の「3 回」に戻るので、速さが欲しい場合は `KeyHoldMs` 自体を
+下げてください（ポーリング方式のアプリを使わないなら 40ms 程度でも実害は
+ありません）。
+
 > **相手側の直し方も書いておく。** `GetAsyncKeyState` の戻り値は
 > `0x8000`（いま押されているか）だけでなく `0x0001`（**前回この関数を
 > 呼んでから押されたか**）を持っています。後者を見れば、周期の隙間に
@@ -450,15 +472,16 @@ powershell -ExecutionPolicy Bypass -File tools\stress.ps1
 | `tools\test_keydur.ps1` | 注入したキーが実際に何 ms 押されているかの実測 |
 | `tools\test_autorepeat.ps1` | 注入した押下がオートリピートしないことの確認 |
 | `tools\dbg_settings_paint.ps1` | 窓が重なって離れたあと設定画面が描き直されるか |
-| `tools	est_side_none.ps1` | 「右クリック + サイドボタン = なし」周辺の収支 |
-| `tools	est_lost_up.ps1` | 他ツールに離上を食べられても復帰できるか |
-| `tools	est_rawinput.ps1` | 握り潰した押下が Raw Input には見えることの確認 |
-| `tools	est_cpu.ps1` | マウス移動を流したときの CPU 時間 |
+| `tools\test_side_none.ps1` | 「右クリック + サイドボタン = なし」周辺の収支 |
+| `tools\test_lost_up.ps1` | 他ツールに離上を食べられても復帰できるか |
+| `tools\test_rawinput.ps1` | 握り潰した押下が Raw Input には見えることの確認 |
+| `tools\test_cpu.ps1` | マウス移動を流したときの CPU 時間 |
 | `tools\dbg_x1_control.ps1` | mayous 抜きでサイドボタンがどう届くかの対照実験 |
-| `tools	est_refire.ps1` | プレフィクスを押したまま何度も成立させたときの押し直し |
-| `tools	est_zoompon_refire.ps1` | 同上を実物の zoom-pon で数える(要 zoom-pon) |
-| `tools	est_asyncbit0.py` | GetAsyncKeyState の 0x0001 で短い押下を拾えるか |
+| `tools\test_refire.ps1` | プレフィクスを押したまま何度も成立させたときの押し直し |
+| `tools\test_zoompon_refire.ps1` | 同上を実物の zoom-pon で数える(要 zoom-pon) |
+| `tools\test_asyncbit0.py` | GetAsyncKeyState の 0x0001 で短い押下を拾えるか |
 | `tools\test_zoompon_e2e.ps1` | 実物の zoom-pon を相手にした反応率（要 zoom-pon） |
+| `tools\test_wheel_latency.ps1` | 同時押しのキーがホイールから何 ms 遅れて出るか |
 | `tools\shot_settings.ps1` | 設定画面のキャプチャ（目視確認用） |
 
 ### テストを書くときの落とし穴

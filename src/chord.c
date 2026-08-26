@@ -425,6 +425,18 @@ static void hold_push(const KeyStep *s, BOOL down)
     q_push(down ? Q_HOLD_DOWN : Q_HOLD_UP, 0, 0, &tmp);
 }
 
+/* 押しているキーと、これから押すキーが同じ組み合わせか。
+   違うなら「離して押し直した」ことが誰の目にも明らかなので、間を空けずに
+   入れ替えてよい(hold_begin のコメント参照)。 */
+static BOOL step_same(const KeyStep *a, const KeyStep *b)
+{
+    int i;
+    if (a->nkeys != b->nkeys) return FALSE;
+    for (i = 0; i < a->nkeys; ++i)
+        if (a->keys[i] != b->keys[i]) return FALSE;
+    return TRUE;
+}
+
 static void hold_rel_timer_kill(int pfx)
 {
     if (g_hwnd) KillTimer(g_hwnd, TIMER_KEYREL_BASE + pfx);
@@ -464,17 +476,29 @@ static void hold_press_now(int pfx, const KeyStep *s)
 static void hold_begin(int pfx, const Action *a)
 {
     if (g_hold[pfx].repress) {          /* 間を空けている最中の再発火 */
+        /* 間を空けていたのは、直前に離したキーと同じキーを押し直すため。
+           別のキーになったのなら待つ理由が無いので、約束を破って今すぐ押す。 */
+        if (!step_same(&g_hold[pfx].step, &a->steps[0])) {
+            hold_rel_timer_kill(pfx);
+            g_hold[pfx].repress = FALSE;
+            hold_press_now(pfx, &a->steps[0]);
+            return;
+        }
         g_hold[pfx].next = a->steps[0]; /* 押し直す中身だけ差し替える */
         return;
     }
     if (g_hold[pfx].down) {
+        BOOL same = step_same(&g_hold[pfx].step, &a->steps[0]);
         hold_release_now(pfx);          /* ここで repress は falseに戻る */
+        /* 違うキーへの入れ替えなら、間を空けずにそのまま押す。
+           離上と押下は同じ chord_pump() で続けて出るが、キーが別物である以上、
+           状態を見に行く作りのアプリでも「前のキーが離れ、別のキーが押された」
+           と読める。待たされないぶん、体感の遅れが消える。
+           ホイール上に a・下に b、のような割り当てが効いてくるのはここ。 */
+        if (!same || !g_hwnd) { hold_press_now(pfx, &a->steps[0]); return; }
         g_hold[pfx].next    = a->steps[0];
         g_hold[pfx].repress = TRUE;
-        if (g_hwnd)
-            SetTimer(g_hwnd, TIMER_KEYREL_BASE + pfx, (UINT)g_cfg.keyHoldMs, NULL);
-        else
-            hold_press_now(pfx, &a->steps[0]);
+        SetTimer(g_hwnd, TIMER_KEYREL_BASE + pfx, (UINT)g_cfg.keyHoldMs, NULL);
         return;
     }
     hold_press_now(pfx, &a->steps[0]);
