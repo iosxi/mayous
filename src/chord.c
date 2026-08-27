@@ -154,8 +154,8 @@ static const DWORD kXData[BTN_COUNT] = { 0, 0, 0, XBUTTON1, XBUTTON2 };
  *  フックから戻った直後に処理されるので、体感上の遅れは無い。
  * ================================================================== */
 
-enum { Q_CLICK, Q_DOWN, Q_UP, Q_KEYS, Q_HWHEEL, Q_DRAG_START,
-       Q_HOLD_DOWN, Q_HOLD_UP };
+enum { Q_CLICK, Q_DOWN, Q_UP, Q_KEYS, Q_HWHEEL, Q_VWHEEL, Q_DRAG_START,
+       Q_HOLD_DOWN, Q_HOLD_UP, Q_MARK_ON, Q_MARK_OFF };
 
 typedef struct {
     BYTE    kind;
@@ -203,6 +203,22 @@ static void q_push_drag(int btn, POINT from, POINT to)
     it->btn  = (BYTE)btn;
     it->from = from;
     it->to   = to;
+    g_qTail  = next;
+
+    if (g_hwnd) PostMessageW(g_hwnd, WM_MAYOUS_PUMP, 0, 0);
+}
+
+/* 座標だけを載せて積む(オートスクロールの目印を出す位置) */
+static void q_push_point(BYTE kind, POINT p)
+{
+    int next = (g_qTail + 1) % QCAP;
+    QItem *it;
+
+    if (next == g_qHead) return;
+    it = &g_q[g_qTail];
+    ZeroMemory(it, sizeof(*it));
+    it->kind = kind;
+    it->to   = p;
     g_qTail  = next;
 
     if (g_hwnd) PostMessageW(g_hwnd, WM_MAYOUS_PUMP, 0, 0);
@@ -414,6 +430,9 @@ void chord_pump(void)
                してもホイールだけは OS に捨てられる(詳細は agent.c 冒頭)。 */
             agent_send_wheel(it.amount, TRUE);
             break;
+        case Q_VWHEEL:  agent_send_wheel(it.amount, FALSE); break;
+        case Q_MARK_ON: overlay_show(it.to);                break;
+        case Q_MARK_OFF: overlay_hide();                    break;
         }
     }
 }
@@ -423,6 +442,7 @@ void chord_pump(void)
 static void inject_button(int btn, BOOL down) { q_push(down ? Q_DOWN : Q_UP, btn, 0, NULL); }
 static void inject_click(int btn)             { q_push(Q_CLICK, btn, 0, NULL); }
 static void inject_hwheel(int amount)         { q_push(Q_HWHEEL, 0, amount, NULL); }
+static void inject_vwheel(int amount)         { q_push(Q_VWHEEL, 0, amount, NULL); }
 static void inject_keys(const Action *a)      { q_push(Q_KEYS, 0, 0, a); }
 
 /* ================================================================== */
@@ -640,6 +660,75 @@ static void pfx_promote(int b)
     pfx_promote_at(b, NULL);
 }
 
+/* ==================================================================
+ *  スクロール・モード (オートスクロール)
+ *
+ *  中ボタンを押して離すと入り、もう一度クリックするか Esc で出る。
+ *  入っているあいだはマウスの移動を握り潰し、その移動量をホイールに
+ *  変えて注入する。つまりカーソルはその場に凍りつき、机の上で
+ *  マウスを動かすとページが動く。X-Mouse Button Control の
+ *  「オートスクロール(Change Movement to Scroll)」と同じ操作感。
+ *
+ *  【移動を握り潰すのはここだけ】
+ *  普段は移動を絶対に殺さない(on_move の末尾を参照)。ここだけが例外で、
+ *  そのぶん「抜け損ねるとカーソルが凍ったまま戻らない」という、
+ *  この機能で唯一の重大な壊れ方を招く。抜け道は多めに用意してある:
+ *      ・どのボタンでもいいので押す (そのクリックは食べる)
+ *      ・Esc
+ *      ・無効化された / 除外アプリが前面に来た (chord_sanity)
+ *      ・設定の再読み込み・終了・デスクトップ切替 (chord_flush)
+ *
+ *  カーソルが止まるので、そのままでは固まったようにしか見えない。
+ *  入った場所に目印を出す(overlay.c)。生成はメッセージループ側で行う
+ *  必要があるので、注入キュー経由で頼む。
+ * ================================================================== */
+
+static BOOL  g_scroll;        /* スクロール・モード中か */
+static POINT g_scrollAt;      /* 入った場所(カーソルはここで固定される) */
+static int   g_scrollPx;      /* まだホイールに変えていない移動量(縦) */
+static int   g_scrollPxH;     /* 同上(横) */
+
+static void scroll_begin(POINT at)
+{
+    DBG("scroll: 開始 (%d,%d)", (int)at.x, (int)at.y);
+    g_scroll   = TRUE;
+    g_scrollAt = at;
+    g_scrollPx = g_scrollPxH = 0;
+    q_push_point(Q_MARK_ON, at);      /* 目印はメッセージループ側で出す */
+}
+
+static void scroll_end(void)
+{
+    if (!g_scroll) return;
+    DBG("scroll: 終了");
+    g_scroll = FALSE;
+    q_push(Q_MARK_OFF, 0, 0, NULL);
+}
+
+/* 1 段ぶんの移動量(px)。速さが上がるほど短くなる。 */
+static int scroll_px_per_notch(void)
+{
+    int sp = g_cfg.autoScrollSpeed > 0 ? g_cfg.autoScrollSpeed : AUTOSCROLL_SPEED_DEFAULT;
+    int px = AUTOSCROLL_PX_PER_NOTCH * 100 / sp;
+    return px > 0 ? px : 1;
+}
+
+/* 貯めた移動量をホイールに変換して注入する。端数は次回へ持ち越す。 */
+static void scroll_feed(int *acc, int delta, BOOL horizontal)
+{
+    int px = scroll_px_per_notch();
+    int amount;
+
+    *acc += delta;
+    amount = *acc * WHEEL_DELTA / px;
+    if (!amount) return;
+    *acc -= amount * px / WHEEL_DELTA;
+
+    /* 下へ動かしたら下へ送る(ホイールは下が負)。横は右が正。 */
+    if (horizontal) inject_hwheel(+amount);
+    else            inject_vwheel(-amount);
+}
+
 static void fire_action(const Action *a, int wheelAmount, int pfx)
 {
     switch (a->kind) {
@@ -654,6 +743,13 @@ static void fire_action(const Action *a, int wheelAmount, int pfx)
         break;
     case ACT_HWHEEL_LEFT:  inject_hwheel(-wheelAmount);  break;
     case ACT_HWHEEL_RIGHT: inject_hwheel(+wheelAmount);  break;
+    case ACT_CLICK:        inject_click(a->btn);         break;
+    case ACT_AUTOSCROLL: {
+        POINT p;
+        GetCursorPos(&p);              /* 読むだけ。注入はしないので安全 */
+        scroll_begin(p);
+        break;
+    }
     default: break;
     }
 }
@@ -756,9 +852,11 @@ void chord_recompute(void)
 
     for (b = 0; b < BTN_COUNT; ++b) {
         g_armed[b] = FALSE;
-        if (!PFX_CAN(b)) continue;
-        /* 単独クリックが「そのまま」以外なら、それだけでも乗っ取りが要る */
+        /* 単独クリックが「そのまま」以外なら、それだけでも乗っ取りが要る。
+           中ボタンは「先に押す側」にはなれないが、ここには入る
+           (オートスクロールや中クリックの差し替えはこの経路)。 */
         if (g_cfg.single[b].kind != ACT_PASSTHRU) { g_armed[b] = TRUE; continue; }
+        if (!PFX_CAN(b)) continue;
         for (s = 0; s < SUF_COUNT; ++s) {
             /* トリガーが未登録の登録キーは、動作が入っていても発火しようがない。
                そのために押下を預かるのは丸損なので数に入れない。 */
@@ -789,6 +887,7 @@ static void chord_flush(BOOL deliverPending)
     play_flush();       /* 再生途中のキーを押しっぱなしにしない */
     hold_end_all();
     keysw_clear();      /* 登録キーの控えも持ち越さない */
+    scroll_end();       /* カーソルを凍らせたまま放置しない */
 
     for (i = 0; i < BTN_COUNT; ++i) {
         if (g_pfx[i].st == PS_PASSTHRU)
@@ -854,6 +953,11 @@ void chord_sanity(void)
     int i;
 
     reap_lost();        /* まずは取りこぼした離上を回収する */
+
+    /* 無効化された(除外アプリが前面に来た・フルスクリーン・停止)のに
+       スクロール・モードのままだと、カーソルが凍ったまま抜け道が
+       クリックだけになる。ここで必ず解く。 */
+    if (g_scroll && !g_on) scroll_end();
 
     for (i = 0; i < BTN_COUNT; ++i) {
         if (g_pfx[i].st == PS_IDLE) continue;
@@ -923,6 +1027,16 @@ static BOOL on_button_down(int btn, const MSLLHOOKSTRUCT *m)
     g_physDown[btn] = TRUE;
 
     reconcile(btn);
+
+    /* スクロール・モード中のクリックは「やめる」の合図。
+       そのクリック自体はアプリへ渡さない(離上もあとで殺す)。 */
+    if (g_scroll) {
+        scroll_end();
+        g_swallowUp[btn] = TRUE;
+        g_swallowT[btn]  = GetTickCount64();
+        return TRUE;
+    }
+
     if (!g_on) return FALSE;          /* 無効中は新しく乗っ取らない */
 
     /* (1) 誰かがプレフィクスとして待機中なら、同時押しの成立を試す */
@@ -992,6 +1106,17 @@ static BOOL on_button_up(int btn)
 static BOOL on_move(const MSLLHOOKSTRUCT *m)
 {
     int b;
+
+    /* スクロール・モード。移動をここで食べるのでカーソルは動かない。
+       食べた移動量がそのままホイールになる。
+       pt は「動かした先」なので、固定されている今の位置との差が
+       そのまま 1 回ぶんの移動量になる。 */
+    if (g_scroll) {
+        scroll_feed(&g_scrollPx,  m->pt.y - g_scrollAt.y, FALSE);
+        scroll_feed(&g_scrollPxH, m->pt.x - g_scrollAt.x, TRUE);
+        return TRUE;
+    }
+
     for (b = 0; b < BTN_COUNT; ++b) {
         if (g_pfx[b].st != PS_PENDING) continue;
         if (abs(m->pt.x - g_pfx[b].anchor.x) > g_dragThresh ||
@@ -1007,6 +1132,7 @@ static BOOL on_wheel(const MSLLHOOKSTRUCT *m)
     int suf, mag, p;
 
     if (delta == 0) return FALSE;
+    if (g_scroll) return FALSE;       /* 本物のホイールはそのまま効かせる */
     suf = (delta > 0) ? SUF_WUP : SUF_WDN;
     mag = abs(delta);                     /* 高分解能ホイールの刻みをそのまま活かす */
 
@@ -1114,6 +1240,10 @@ BOOL chord_on_key(UINT msg, const KBDLLHOOKSTRUCT *k)
         return FALSE;
     }
     if (msg != WM_KEYDOWN && msg != WM_SYSKEYDOWN) return FALSE;
+
+    /* スクロール・モードの抜け道。カーソルが凍っているので、
+       マウスが信用できない状況でも必ず戻れるようにしておく。 */
+    if (g_scroll && vk == VK_ESCAPE) { scroll_end(); return TRUE; }
 
     /* オートリピート。既に発火済みなので握り潰すだけ(連打にしない)。 */
     if (keysw_find(vk) >= 0) return TRUE;

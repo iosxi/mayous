@@ -4,6 +4,8 @@
  *      none                       何もしない
  *      passthru                   単独クリック用。手を加えずそのまま通す
  *      hwheel_left / hwheel_right 水平ホイール
+ *      click:middle               別のマウスボタンを 1 回出す(middleclick も可)
+ *      autoscroll                 押して離すとスクロール・モードに入る
  *      win / alttab / alttab_back よく使うものの別名
  *      ctrl+alt+t                 1ステップのキーコンボ
  *      ctrl+c, ctrl+v             複数ステップ(記録したものの再生)
@@ -192,6 +194,25 @@ BOOL cfg_parse_action(const WCHAR *src, Action *a)
     }
     if (!wcscmp(buf, L"hwheel_left")  || !wcscmp(buf, L"wheelleft"))  { a->kind = ACT_HWHEEL_LEFT;  return TRUE; }
     if (!wcscmp(buf, L"hwheel_right") || !wcscmp(buf, L"wheelright")) { a->kind = ACT_HWHEEL_RIGHT; return TRUE; }
+    if (!wcscmp(buf, L"autoscroll")) { a->kind = ACT_AUTOSCROLL; return TRUE; }
+    {   /* 別のマウスボタンを出す。"click:middle" と "middleclick" のどちらでも。 */
+        static const struct { const WCHAR *name; int btn; } kClick[] = {
+            { L"left", BTN_L }, { L"right", BTN_R }, { L"middle", BTN_M },
+            { L"side1", BTN_X1 }, { L"side2", BTN_X2 },
+        };
+        size_t i;
+        for (i = 0; i < ARRAYSIZE(kClick); ++i) {
+            WCHAR a1[32], a2[32];
+            lstrcpynW(a1, L"click:", ARRAYSIZE(a1)); lstrcatW(a1, kClick[i].name);
+            lstrcpynW(a2, kClick[i].name, ARRAYSIZE(a2)); lstrcatW(a2, L"click");
+            if (!wcscmp(buf, a1) || !wcscmp(buf, a2)) {
+                a->kind = ACT_CLICK;
+                a->btn  = kClick[i].btn;
+                return TRUE;
+            }
+        }
+        if (!wcsncmp(buf, L"click:", 6)) { a->kind = ACT_NONE; return FALSE; }
+    }
     if (!wcscmp(buf, L"alttab"))      lstrcpynW(buf, L"alt+tab",       ARRAYSIZE(buf));
     if (!wcscmp(buf, L"alttab_back")) lstrcpynW(buf, L"alt+shift+tab", ARRAYSIZE(buf));
 
@@ -403,6 +424,9 @@ L"; 短すぎると、キーの状態を一定間隔で見に行く方式のア�
 L"; 間隔の隙間に収まった押下を丸ごと取りこぼす。\r\n"
 L"KeyHoldMs=120\r\n"
 L"\r\n"
+L"; オートスクロールの速さ(%)。大きいほど速い。20〜500。\r\n"
+L"AutoScrollSpeed=100\r\n"
+L"\r\n"
 L"; 同じキーを押し直すときに空ける時間(ms)。120 / 80 / 40 / 20 から選ぶ。\r\n"
 L"; ボタンを押したまま同じ組み合わせを繰り返すと、いったん離して押し直す。\r\n"
 L"; ここで間を空けないと、キーの状態を一定間隔で見に行く方式のアプリからは\r\n"
@@ -455,10 +479,14 @@ L";   RightThenKey1Trigger=f13\r\n"
 L";   RightThenKey1=ctrl+w\r\n"
 L"\r\n"
 L"[Single]\r\n"
-L"; サイドボタンを単独で押したときの動作。\r\n"
-L";   passthru = 本来のボタンとしてそのまま通す(既定)\r\n"
+L"; サイドボタン・中ボタンを単独で押したときの動作。\r\n"
+L";   passthru     本来のボタンとしてそのまま通す(既定)\r\n"
+L";   click:middle 中クリックを出す(middleclick とも書ける)\r\n"
+L";   autoscroll   押して離すとスクロール・モードに入る(中ボタン向け)\r\n"
+L";   ctrl+c ...   キーコンボでもよい\r\n"
 L"Side1Alone=passthru\r\n"
 L"Side2Alone=passthru\r\n"
+L"MiddleAlone=passthru\r\n"
 L"\r\n"
 L"[Exclude]\r\n"
 L"; ここに書いた実行ファイルが前面のあいだは全機能を停止する。カンマ区切り。\r\n"
@@ -509,6 +537,10 @@ void cfg_load(void)
     g_cfg.keyHoldMs           = GetPrivateProfileIntW(L"General", L"KeyHoldMs", KEY_HOLD_MS_DEFAULT, g_cfg.iniPath);
     g_cfg.repressGapMs        = cfg_repress_gap_snap(
         GetPrivateProfileIntW(L"General", L"RepressGapMs", REPRESS_GAP_MS_DEFAULT, g_cfg.iniPath));
+    g_cfg.autoScrollSpeed     = GetPrivateProfileIntW(L"General", L"AutoScrollSpeed",
+                                                      AUTOSCROLL_SPEED_DEFAULT, g_cfg.iniPath);
+    if (g_cfg.autoScrollSpeed < AUTOSCROLL_SPEED_MIN) g_cfg.autoScrollSpeed = AUTOSCROLL_SPEED_MIN;
+    if (g_cfg.autoScrollSpeed > AUTOSCROLL_SPEED_MAX) g_cfg.autoScrollSpeed = AUTOSCROLL_SPEED_MAX;
 
     {   /* 設定画面の配色: system / light / dark */
         WCHAR t[32];
@@ -561,9 +593,12 @@ void cfg_load(void)
         }
     }
 
+    /* 単独クリックを差し替えられるのはサイドボタンと中ボタン。
+       中ボタンは「先に押す側」にはなれないが、単独の動作は差し替えられる
+       (オートスクロールはここに入る)。左右クリックは事故のもとなので対象外。 */
     for (b = 0; b < BTN_COUNT; ++b) {
         Action *a = &g_cfg.single[b];
-        if (b != BTN_X1 && b != BTN_X2) { cfg_parse_action(L"passthru", a); continue; }
+        if (b != BTN_X1 && b != BTN_X2 && b != BTN_M) { cfg_parse_action(L"passthru", a); continue; }
         cfg_single_ini_key(b, key, ARRAYSIZE(key));
         GetPrivateProfileStringW(L"Single", key, L"passthru", v, ARRAYSIZE(v), g_cfg.iniPath);
         cfg_parse_action(v, a);

@@ -31,6 +31,7 @@
 #define IDC_SINGLE_BASE  2200            /* +btn */
 #define IDC_SREC_BASE    2210            /* +btn */
 #define IDC_KEYTRIG_BASE 2300            /* +btn*REGKEY_COUNT+枠 登録キーのキー */
+#define IDC_SCROLLSPEED  1150            /* オートスクロールの速さ(%) */
 #define IDC_ENABLED      1100
 #define IDC_FULLSCREEN   1102
 #define IDC_HOLD_BASE    1110            /* +btn */
@@ -71,6 +72,10 @@ static const Preset kPresets[] = {
     { L"── スクロール ──",                  NULL },
     { L"水平ホイール 左",                   L"hwheel_left" },
     { L"水平ホイール 右",                   L"hwheel_right" },
+    { L"オートスクロール",                  L"autoscroll" },
+
+    { L"── マウスのボタン ──",              NULL },
+    { L"中クリック",                        L"click:middle" },
 
     /* ほかの常駐アプリのトリガーとして使うためのキー。同時押しを保っている
        あいだ押しっぱなしになるので、「押している間だけ効く」タイプにも使える。
@@ -134,6 +139,11 @@ static HWND   g_hDrag, g_hExclude, g_hApply;
 /* 登録キーのトリガー。ボタンの文字が今の登録内容そのものになる。
    編集中の値は ini ではなくこちらに置き、[OK]/[適用] でまとめて書く。 */
 static HWND   g_trig[BTN_COUNT][REGKEY_COUNT];
+
+/* 中クリックのタブだけに出す部品(速さの欄と注意書き)。
+   タブを切り替えたときに一緒に消せるよう、handle を控えておく。 */
+static HWND   g_mid[8];
+static int    g_midN;
 static WCHAR  g_trigSpec[BTN_COUNT][REGKEY_COUNT][REGKEY_SPEC_CCH];
 
 /* 未保存の変更があるか。[適用] の活性はこれに従う。 */
@@ -151,7 +161,7 @@ static void set_dirty(BOOL dirty)
    左クリックは、押下を離すまで預かる代償(ウィンドウの切り替えが遅れる、
    枠を掴み損ねる)が大きく、動作の安定を優先していったん取りやめた。
    復活させるときは PFX_CAN() と、ここへ BTN_L を戻す。 */
-static const int kTabPfx[] = { BTN_R, BTN_X1, BTN_X2 };
+static const int kTabPfx[] = { BTN_R, BTN_X1, BTN_X2, BTN_M };
 #define TAB_COUNT ((int)ARRAYSIZE(kTabPfx))
 
 /* 96dpi で書いた値を実際のフォント高さに合わせて伸ばす */
@@ -311,6 +321,9 @@ static void show_tab(int tab)
         }
         for (i = 0; i < REGKEY_COUNT; ++i)
             if (g_trig[pfx][i]) ShowWindow(g_trig[pfx][i], show);
+        if (pfx == BTN_M)
+            for (i = 0; i < g_midN; ++i)
+                if (g_mid[i]) ShowWindow(g_mid[i], show);
     }
 }
 
@@ -365,6 +378,7 @@ static void load_values(void)
     for (b = 0; b < BTN_COUNT; ++b)
         if (g_hHold[b]) SetDlgItemInt(g_wnd, IDC_HOLD_BASE + b, (UINT)g_cfg.holdTimeoutMs[b], FALSE);
     SetDlgItemInt(g_wnd, IDC_DRAG, (UINT)g_cfg.dragThreshold, FALSE);
+    SetDlgItemInt(g_wnd, IDC_SCROLLSPEED, (UINT)g_cfg.autoScrollSpeed, FALSE);
 
     for (b = 0; b < REPRESS_GAP_STEPS; ++b)
         CheckDlgButton(g_wnd, IDC_GAP_BASE + b,
@@ -475,6 +489,12 @@ static BOOL save_values(void)
             cfg_write_int(L"General", cfg_hold_ini_key(b),
                           (int)GetDlgItemInt(g_wnd, IDC_HOLD_BASE + b, &ok, FALSE));
     cfg_write_int(L"General", L"DragThreshold", (int)GetDlgItemInt(g_wnd, IDC_DRAG, &ok, FALSE));
+    {
+        int sp = (int)GetDlgItemInt(g_wnd, IDC_SCROLLSPEED, &ok, FALSE);
+        if (sp < AUTOSCROLL_SPEED_MIN) sp = AUTOSCROLL_SPEED_MIN;
+        if (sp > AUTOSCROLL_SPEED_MAX) sp = AUTOSCROLL_SPEED_MAX;
+        cfg_write_int(L"General", L"AutoScrollSpeed", sp);
+    }
 
     for (b = 0; b < REPRESS_GAP_STEPS; ++b)
         if (IsDlgButtonChecked(g_wnd, IDC_GAP_BASE + b) == BST_CHECKED) {
@@ -679,6 +699,37 @@ static void build(HWND hwnd)
         int pfx = kTabPfx[t];
         y = m + 34;
 
+        /* 中ボタンは「先に押す側」になれないので、同時押しの行は無い。
+           単独で押したときの動作と、オートスクロールの速さだけを置く。 */
+        if (pfx == BTN_M) {
+            add_row(hwnd, L"単独クリック", y,
+                    &g_slbl[pfx], &g_scmb[pfx], &g_srec[pfx],
+                    IDC_SINGLE_BASE + pfx, IDC_SREC_BASE + pfx, TRUE);
+            y += ROW_H;
+            g_midN = 0;
+            g_mid[g_midN++] = mk(hwnd, L"STATIC", L"オートスクロールの速さ", SS_LEFT,
+                                 12 + 14, y + 4, LBL_W, 20, 0);
+            g_mid[g_midN++] = mk(hwnd, L"EDIT", L"",
+                                 ES_NUMBER | ES_RIGHT | WS_BORDER | WS_TABSTOP,
+                                 12 + 14 + LBL_W + 6, y, 56, 22, IDC_SCROLLSPEED);
+            g_mid[g_midN++] = mk(hwnd, L"STATIC", L"%   (大きいほど速い。20〜500)", SS_LEFT,
+                                 12 + 14 + LBL_W + 6 + 60, y + 4, 240, 20, 0);
+            y += ROW_H + 6;
+            g_mid[g_midN++] = mk(hwnd, L"STATIC",
+                L"※ 中ボタンは「先に押す側」にはできません。押しっぱなしにする用途が無く、",
+                SS_LEFT, 12 + 14, y, WIN_W - 24 - 28, 16, 0);
+            g_mid[g_midN++] = mk(hwnd, L"STATIC",
+                L"　 オートスクロールと衝突するためです。後から押す側としては使えます。",
+                SS_LEFT, 12 + 14, y + 16, WIN_W - 24 - 28, 16, 0);
+            g_mid[g_midN++] = mk(hwnd, L"STATIC",
+                L"※ オートスクロール中はカーソルが止まります。もう一度クリックするか",
+                SS_LEFT, 12 + 14, y + 38, WIN_W - 24 - 28, 16, 0);
+            g_mid[g_midN++] = mk(hwnd, L"STATIC",
+                L"　 Esc で抜けます。",
+                SS_LEFT, 12 + 14, y + 54, WIN_W - 24 - 28, 16, 0);
+            continue;
+        }
+
         /* サイドボタンだけ「単独クリック」を差し替えられるようにする。
            左右クリックまで差し替えると事故のもとなので対象外。 */
         if (pfx == BTN_X1 || pfx == BTN_X2) {
@@ -808,6 +859,8 @@ static void rebuild(HWND hwnd)
     ZeroMemory(g_scmb, sizeof(g_scmb));
     ZeroMemory(g_hHold, sizeof(g_hHold));
     ZeroMemory(g_trig, sizeof(g_trig));
+    ZeroMemory(g_mid, sizeof(g_mid));
+    g_midN = 0;
     g_hApply = NULL;
     ZeroMemory(g_group, sizeof(g_group));
     g_groupN = 0;

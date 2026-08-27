@@ -11,6 +11,7 @@
 #   その2 設定画面
 #     登録キーの行(キーのボタン + 動作のコンボ)が出ていて、
 #     ini へ正しく書けること。ついでに左クリックのタブが消えていること。
+#     (タブは 右 / サイド1 / サイド2 / 中クリック の 4 つ)
 #
 #   利用者の設定は触らない(一時フォルダへ複製して動かす)。
 #
@@ -159,8 +160,8 @@ $trig  = [RK]::GetDlgItem($sw, $IDC_TRIG)
 $act   = [RK]::GetDlgItem($sw, $IDC_ACTION)
 $holdL = [RK]::GetDlgItem($sw, $IDC_HOLD_L)
 
-Write-Host ("  タブの数            : {0} (期待 3 = 右/サイド1/サイド2)" -f $tabs)
-if ($tabs -ne 3) { $ng = 1 }
+Write-Host ("  タブの数            : {0} (期待 4 = 右/サイド1/サイド2/中クリック)" -f $tabs)
+if ($tabs -ne 4) { $ng = 1 }
 Write-Host ("  左クリックの長押し欄: {0}" -f $(if ($holdL -eq [IntPtr]::Zero) { '無し (期待どおり)' } else { 'まだ有る (NG)' }))
 if ($holdL -ne [IntPtr]::Zero) { $ng = 1 }
 Write-Host ("  登録キーのキー      : '{0}' (期待 F13)" -f (Text-Of $trig))

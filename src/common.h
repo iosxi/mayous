@@ -14,7 +14,7 @@
 #include <windows.h>
 
 #define MAYOUS_APPNAME      L"Mayous"
-#define MAYOUS_VERSION      L"v15"
+#define MAYOUS_VERSION      L"v16"
 #define MAYOUS_WNDCLASS     L"MayousHiddenWnd"
 #define MAYOUS_AGENT_CLASS  L"MayousWheelAgentWnd"
 #define MAYOUS_MUTEX        L"Local\\MayousSingleInstance_{7A1C4E2B-9D3F-4A55-8C10-2E6B0F9D4A31}"
@@ -85,6 +85,8 @@ typedef enum {
     ACT_HOLD_KEYS,     /* 同時押しを保っている間ずっと押しっぱなしにする */
     ACT_HWHEEL_LEFT,   /* 水平ホイール左                    */
     ACT_HWHEEL_RIGHT,  /* 水平ホイール右                    */
+    ACT_CLICK,         /* 別のマウスボタンを 1 回出す(Action.btn) */
+    ACT_AUTOSCROLL,    /* 押して離すとスクロール・モードに入る    */
     ACT_PASSTHRU       /* 単独クリック用: 何も変えずそのまま */
 } ActionKind;
 
@@ -98,6 +100,7 @@ typedef struct {
     ActionKind kind;
     KeyStep    steps[MAX_ACTION_STEPS];
     int        nsteps;
+    int        btn;                     /* ACT_CLICK のときのボタン添字 */
     WCHAR      spec[ACTION_SPEC_CCH];   /* 元の設定文字列(表示・保存用) */
 } Action;
 
@@ -134,6 +137,13 @@ typedef enum { THEME_SYSTEM = 0, THEME_LIGHT, THEME_DARK } ThemeMode;
 #define REPRESS_GAP_MS_DEFAULT 120
 extern const int kRepressGapMs[REPRESS_GAP_STEPS];   /* 120 / 80 / 40 / 20 */
 
+/* オートスクロールの速さ。100% のとき、マウスを AUTOSCROLL_PX_PER_NOTCH だけ
+   動かすとホイール 1 段ぶん送る。大きいほど速い。 */
+#define AUTOSCROLL_SPEED_DEFAULT 100
+#define AUTOSCROLL_SPEED_MIN      20
+#define AUTOSCROLL_SPEED_MAX     500
+#define AUTOSCROLL_PX_PER_NOTCH   12
+
 typedef struct {
     BOOL   enabled;
     int    dragThreshold;              /* px, 0 = システム値(SM_CXDRAG)を使う */
@@ -141,6 +151,7 @@ typedef struct {
     BOOL   suspendOnFullscreen;
     int    keyHoldMs;                  /* 注入したキーを押しておく時間(ms) */
     int    repressGapMs;               /* 同じキーを押し直すまで空ける時間(ms) */
+    int    autoScrollSpeed;            /* オートスクロールの速さ(%) */
     ThemeMode theme;                   /* 設定画面の配色 */
     Action chord[CH_COUNT];
     Action single[BTN_COUNT];          /* 単独クリックの置き換え(サイドボタン用) */
@@ -222,6 +233,10 @@ void     theme_draw_tab(const DRAWITEMSTRUCT *di, HFONT font);
 
 /* legacy.c - 昔のバージョンが残したレジストリ登録の掃除 */
 void  startup_cleanup_legacy(void);
+
+/* overlay.c - オートスクロール中に出す目印 */
+void  overlay_show(POINT center);
+void  overlay_hide(void);
 
 /* capture.c - キー入力の記録 */
 BOOL  capture_run(HINSTANCE inst, HWND owner, WCHAR *out, int cch);

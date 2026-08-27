@@ -129,11 +129,14 @@ static LRESULT CALLBACK LLKeyProc(int nCode, WPARAM wParam, LPARAM lParam)
     return CallNextHookEx(NULL, nCode, wParam, lParam);
 }
 
-/* 登録キーが 1 つでも使える状態なら TRUE。トリガーと動作の両方が要る。 */
+/* 登録キーが 1 つでも使える状態なら TRUE。トリガーと動作の両方が要る。
+   オートスクロールを使う設定でも張る ── スクロール中はカーソルが
+   凍るので、Esc で必ず抜けられる道を用意しておく必要がある。 */
 static BOOL needs_key_hook(void)
 {
     int pfx, i;
     for (pfx = 0; pfx < BTN_COUNT; ++pfx) {
+        if (g_cfg.single[pfx].kind == ACT_AUTOSCROLL) return TRUE;
         if (!PFX_CAN(pfx)) continue;
         for (i = 0; i < REGKEY_COUNT; ++i)
             if (g_cfg.regKeyVk[pfx][i] &&
@@ -488,11 +491,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 /* ================================================================== */
 
-/* ホイール系の割り当てが1つでもあれば、注入用の子プロセスが要る */
+/* ホイール系の割り当てが1つでもあれば、注入用の子プロセスが要る。
+   オートスクロールもホイールを注入するので同じく必要。 */
 static BOOL needs_agent(void)
 {
     int pfx;
     for (pfx = 0; pfx < BTN_COUNT; ++pfx) {
+        if (g_cfg.single[pfx].kind == ACT_AUTOSCROLL)                return TRUE;
         if (g_cfg.chord[CH_ID(pfx, SUF_WUP)].kind != ACT_NONE) return TRUE;
         if (g_cfg.chord[CH_ID(pfx, SUF_WDN)].kind != ACT_NONE) return TRUE;
     }

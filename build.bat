@@ -67,6 +67,7 @@ gcc -B "%OUT%/" !CFLAGS! !LINKFLAGS! ^
     "%ROOT%src\main.c" "%ROOT%src\chord.c" "%ROOT%src\config.c" ^
     "%ROOT%src\agent.c" "%ROOT%src\settings.c" ^
     "%ROOT%src\capture.c" "%ROOT%src\legacy.c" "%ROOT%src\theme.c" ^
+    "%ROOT%src\overlay.c" ^
     "%OUT%\mayous.res" -o "!EXE!" !LIBS!
 if errorlevel 1 exit /b 1
 
