@@ -20,6 +20,7 @@ tools/           アイコン生成、テストハーネス
                  probe.c   … フック鎖に入って観測する
                  target.c  … 本物のウィンドウとしてアプリ視点を記録する
                  regkey.c  … 登録キーの発火を mayous の下流から観測する
+                 dpifont.c … 表示スケールとフォントの追従を数字で見る
                  uilib.ps1 … 他プロセスの GUI を安全に叩く共通部品
 ```
 
@@ -470,6 +471,45 @@ uxtheme.dll の**序数エクスポート**（名前が無く番号でしか呼�
 
 ---
 
+### 11. SystemParametersInfo は「今の DPI」を教えてくれない
+
+`SPI_GETNONCLIENTMETRICS` が返すフォントは、**プロセスが動き出した時点の
+システム DPI** のもので、以後は変わらない。マニフェストで PerMonitorV2 を
+宣言していても、この関数だけは追従しない。設定ウィンドウはこれで組んでいた
+ため、次の手順で文字が異常に小さくなった（利用者からの報告）。
+
+1. 表示スケール 100% で `mayous.exe` を起動（常駐）
+2. 表示スケールを 150% に変更
+3. もう一度 `mayous.exe` を起動 → 常駐側が設定画面を開く
+4. **150% の画面に 100% の文字**で描かれる。開き直しても直らない
+
+1607 以降には DPI を指定して聞ける `SystemParametersInfoForDpi` がある。
+窓の載っているモニタの DPI を `GetDpiForWindow` で取り、それを渡す。
+どちらも user32 にあるが、`GetProcAddress` で取って、無ければ従来の経路に
+落ちるようにしてある。実測（`tools\dpifont.c`、125% の環境で）:
+
+| 取得元 | lfHeight | 文字の高さ（＝レイアウト単位） |
+|---|---|---|
+| `SystemParametersInfo` | -15 | 20（起動時のまま。追従しない） |
+| `ForDpi(96 = 100%)`  | -12 | 15 |
+| `ForDpi(120 = 125%)` | -15 | 20 ← 今の窓が使うべき値 |
+| `ForDpi(144 = 150%)` | -18 | 25 |
+| `ForDpi(192 = 200%)` | -24 | 32 |
+
+`dpifont.exe -watch` を動かしたまま表示スケールを変えると、`SystemParametersInfo`
+の行だけが動かないのが見える。
+
+そのため **フォントは「窓を作ってから」その窓の DPI で作る**。`settings_open()` は
+先に箱だけ作り、オーナーと同じモニタへ移してから `make_font(hwnd)` を呼び、
+`build()` で中身に合わせて大きさを決め直す。中身がまだ無い状態でモニタ間を
+移ると `WM_DPICHANGED` が飛んでくるので、そこでは何もしない（`g_tab` が
+NULL なら未完成）。作り直しが二重に走ると、コントロールが二重にできる。
+
+記録ウィンドウ（`capture.c`）は設定ウィンドウのフォントを複製して使うので、
+これだけ直せば両方が追従する。
+
+---
+
 ## レジストリを使わない実装
 
 設定は `mayous.ini`（`GetPrivateProfile*` / `WritePrivateProfile*`、常に絶対パス指定）。
@@ -565,6 +605,7 @@ powershell -ExecutionPolicy Bypass -File tools\stress.ps1
 | `tools\test_wheel_latency.ps1` | 同時押しのキーがホイールから何 ms 遅れて出るか |
 | `tools\test_repress_gap.ps1` | 「同じキーの押し直し」のラジオが ini へ書けるか |
 | `tools\test_regkey.ps1` | 登録キーの実測（素通し・握り潰し・遅延・押しっぱなし）と設定画面 |
+| `tools\dpifont.c` | 表示スケールを変えたときのフォントの追従（`-watch` で観察） |
 | `tools\shot_settings.ps1` | 設定画面のキャプチャ（目視確認用） |
 
 ### テストを書くときの落とし穴

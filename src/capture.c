@@ -15,6 +15,9 @@
  *  フックの中で SendInput をしないという原則はここでも同じだが、
  *  記録中は何も注入しないので問題にならない。
  *
+ *  配色は設定ウィンドウと同じ theme.c に従う。窓の背景は自分で塗り、
+ *  文字色はコントロールごとに WM_CTLCOLOR* で指定する。
+ *
  *  【大きさを決め打ちにしない】
  *  かつてはウィンドウも文字の置き場所も px 決め打ちだった。フォントの
  *  大きさや DPI が違う環境では、それだけで文章の右や下が切れる
@@ -227,9 +230,27 @@ static LRESULT CALLBACK CaptureProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         return 0;
 
-    case WM_CTLCOLORSTATIC:
+    case WM_ERASEBKGND: {
+        RECT r;
+        GetClientRect(hwnd, &r);
+        FillRect((HDC)wp, &r, theme_back_brush());
+        return 1;
+    }
+
+    case WM_CTLCOLORBTN:
+    case WM_CTLCOLORSTATIC: {
+        HBRUSH br = NULL;
+        /* 記録した内容の枠だけは、周りより明るくして入力欄らしく見せる
+           (ダークでは WS_EX_CLIENTEDGE の彫り込みが使えないため) */
+        if (theme_is_dark() && (HWND)lp == g_hView) {
+            SetTextColor((HDC)wp, theme_text());
+            SetBkColor((HDC)wp, theme_ctrl_back());
+            return (LRESULT)theme_ctrl_brush();
+        }
+        if (theme_ctlcolor(msg, (HDC)wp, &br)) return (LRESULT)br;
         SetBkMode((HDC)wp, TRANSPARENT);
         return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+    }
 
     case WM_CLOSE:
         g_ok = FALSE;
@@ -290,6 +311,19 @@ static void make_font(void)
     if (g_unit < 10) g_unit = 16;
 }
 
+/* コントロールを 1 つ作る。フォントと配色をまとめて面倒みる。 */
+static HWND mk(HWND parent, HINSTANCE inst, const WCHAR *cls, const WCHAR *text,
+               DWORD exStyle, DWORD style, int x, int y, int w, int h, HMENU id)
+{
+    HWND c = CreateWindowExW(exStyle, cls, text, WS_CHILD | WS_VISIBLE | style,
+                             x, y, w, h, parent, id, inst, NULL);
+    if (c) {
+        SendMessageW(c, WM_SETFONT, (WPARAM)g_font, TRUE);
+        theme_apply_control(c, cls);
+    }
+    return c;
+}
+
 /* s を今のフォントで描いたときの大きさ。
    maxW > 0 なら、その幅で折り返したときの高さを返す(STATIC の既定と同じ折り方)。
    測るフォントと、実際にコントロールへ入れるフォントは必ず同じものにすること。 */
@@ -338,12 +372,13 @@ static BOOL capture_do(HINSTANCE inst, HWND owner, WCHAR *out, int cch, BOOL one
         wc.lpfnWndProc   = CaptureProc;
         wc.hInstance     = inst;
         wc.hCursor       = LoadCursorW(NULL, MAKEINTRESOURCEW(32512));
-        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.hbrBackground = NULL;          /* 背景は WM_ERASEBKGND で塗る */
         wc.lpszClassName = WNDCLASS_CAPTURE;
         if (!RegisterClassExW(&wc)) return FALSE;
         registered = TRUE;
     }
 
+    theme_init();                       /* 設定画面が先に呼んでいるが、念のため */
     make_font();
 
     hint = oneKey
@@ -408,35 +443,30 @@ static BOOL capture_do(HINSTANCE inst, HWND owner, WCHAR *out, int cch, BOOL one
                             WS_POPUP | WS_CAPTION | WS_SYSMENU,
                             x, y, w, h, owner, NULL, inst, NULL);
     if (!g_wnd) return FALSE;
+    theme_apply_window(g_wnd);          /* タイトルバーも暗くする */
 
     {
         HWND c;
-        g_hHint = CreateWindowExW(0, L"STATIC", hint, WS_CHILD | WS_VISIBLE,
-                m, yHint, cw, hz.cy, g_wnd, NULL, inst, NULL);
-        SendMessageW(g_hHint, WM_SETFONT, (WPARAM)g_font, TRUE);
+        g_hHint = mk(g_wnd, inst, L"STATIC", hint, 0, 0, m, yHint, cw, hz.cy, NULL);
 
         /* 記録した内容は長くなりうる(複数ステップ)。入りきらないときは
-           途中で切らず、末尾を ... にして「続きがある」と分かるようにする。 */
-        g_hView = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", L"",
-                SS_CENTER | SS_CENTERIMAGE | SS_ENDELLIPSIS | WS_CHILD | WS_VISIBLE,
-                m, yView, cw, viewH, g_wnd, NULL, inst, NULL);
-        SendMessageW(g_hView, WM_SETFONT, (WPARAM)g_font, TRUE);
+           途中で切らず、末尾を ... にして「続きがある」と分かるようにする。
+           枠は、ライトでは彫り込み、ダークでは細い線 + 明るい背景で出す。 */
+        g_hView = mk(g_wnd, inst, L"STATIC", L"",
+                theme_is_dark() ? 0 : WS_EX_CLIENTEDGE,
+                SS_CENTER | SS_CENTERIMAGE | SS_ENDELLIPSIS |
+                (theme_is_dark() ? WS_BORDER : 0),
+                m, yView, cw, viewH, NULL);
 
-        c = CreateWindowExW(0, L"STATIC", note, WS_CHILD | WS_VISIBLE,
-                m, yNote, cw, nz.cy, g_wnd, NULL, inst, NULL);
-        SendMessageW(c, WM_SETFONT, (WPARAM)g_font, TRUE);
+        mk(g_wnd, inst, L"STATIC", note, 0, 0, m, yNote, cw, nz.cy, NULL);
 
-        c = CreateWindowExW(0, L"BUTTON", kBtn[0], WS_CHILD | WS_VISIBLE,
-                m, yBtn, btnW, btnH, g_wnd, (HMENU)IDC_CAP_CLEAR, inst, NULL);
-        SendMessageW(c, WM_SETFONT, (WPARAM)g_font, TRUE);
-        c = CreateWindowExW(0, L"BUTTON", kBtn[1], WS_CHILD | WS_VISIBLE,
-                m + cw - btnW * 2 - U(8), yBtn, btnW, btnH,
-                g_wnd, (HMENU)IDC_CAP_OK, inst, NULL);
-        SendMessageW(c, WM_SETFONT, (WPARAM)g_font, TRUE);
-        c = CreateWindowExW(0, L"BUTTON", kBtn[2], WS_CHILD | WS_VISIBLE,
-                m + cw - btnW, yBtn, btnW, btnH,
-                g_wnd, (HMENU)IDC_CAP_CANCEL, inst, NULL);
-        SendMessageW(c, WM_SETFONT, (WPARAM)g_font, TRUE);
+        c = mk(g_wnd, inst, L"BUTTON", kBtn[0], 0, 0,
+               m, yBtn, btnW, btnH, (HMENU)IDC_CAP_CLEAR);
+        c = mk(g_wnd, inst, L"BUTTON", kBtn[1], 0, 0,
+               m + cw - btnW * 2 - U(8), yBtn, btnW, btnH, (HMENU)IDC_CAP_OK);
+        c = mk(g_wnd, inst, L"BUTTON", kBtn[2], 0, 0,
+               m + cw - btnW, yBtn, btnW, btnH, (HMENU)IDC_CAP_CANCEL);
+        (void)c;
     }
 
     clear_all();

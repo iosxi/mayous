@@ -215,17 +215,64 @@ static void fill_combo(HWND combo, BOOL withPassthru)
         SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)kPresets[i].label);
 }
 
-static void make_font(void)
+/* ------------------------------------------------------------------ */
+/*  DPI
+ *
+ *  【SystemParametersInfo は今の DPI を教えてくれない】
+ *  SPI_GETNONCLIENTMETRICS が返すフォントは、プロセスが動き出した時点の
+ *  システム DPI のものである。マニフェストで PerMonitorV2 を宣言していても
+ *  この関数だけは追従しない。そのため、
+ *      100% で常駐 -> 表示スケールを 150% に変更 -> 設定画面を開く
+ *  という手順を踏むと、150% の画面に 100% の文字で描かれ、異常に小さく見える
+ *  (利用者からの報告)。開き直しても直らない。プロセスを起動し直すまで
+ *  ずっとそのままになる。
+ *
+ *  1607 以降には DPI を指定して聞ける SystemParametersInfoForDpi がある。
+ *  窓の載っているモニタの DPI を GetDpiForWindow で取り、それを渡す。
+ *  どちらも user32 にあるが、古い環境でも起動できるよう GetProcAddress で
+ *  取り、取れなければ従来どおりの経路に落ちる。
+ * ------------------------------------------------------------------ */
+
+typedef UINT (WINAPI *fnGetDpiForWindow)(HWND);
+typedef BOOL (WINAPI *fnSPIForDpi)(UINT, UINT, PVOID, UINT, UINT);
+
+static fnGetDpiForWindow p_GetDpiForWindow;
+static fnSPIForDpi       p_SPIForDpi;
+static BOOL              g_dpiProbed;
+
+static void dpi_probe(void)
+{
+    HMODULE u;
+    if (g_dpiProbed) return;
+    g_dpiProbed = TRUE;
+    u = GetModuleHandleW(L"user32.dll");
+    if (!u) return;
+    p_GetDpiForWindow = (fnGetDpiForWindow)(void *)GetProcAddress(u, "GetDpiForWindow");
+    p_SPIForDpi       = (fnSPIForDpi)(void *)GetProcAddress(u, "SystemParametersInfoForDpi");
+}
+
+/* ref の載っているモニタの DPI に合わせてフォントを作る。
+   ref は設定ウィンドウ自身。まだ無いとき(初回)は呼び出し元の窓を渡す。 */
+static void make_font(HWND ref)
 {
     NONCLIENTMETRICSW ncm;
     HDC dc;
     TEXTMETRICW tm;
     HFONT old;
+    UINT dpi = 0;
+    BOOL got = FALSE;
 
     if (g_font) { DeleteObject(g_font); g_font = NULL; }
 
+    dpi_probe();
+    if (ref && p_GetDpiForWindow) dpi = p_GetDpiForWindow(ref);
+
     ncm.cbSize = sizeof(ncm);
-    if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0))
+    if (dpi && p_SPIForDpi)
+        got = p_SPIForDpi(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0, dpi);
+    if (!got)
+        got = SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
+    if (got)
         g_font = CreateFontIndirectW(&ncm.lfMessageFont);
     if (!g_font) g_font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
 
@@ -764,7 +811,7 @@ static void rebuild(HWND hwnd)
     g_hApply = NULL;
     ZeroMemory(g_group, sizeof(g_group));
     g_groupN = 0;
-    make_font();
+    make_font(hwnd);
     build(hwnd);
     load_values();
 }
@@ -936,6 +983,9 @@ static LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_DPICHANGED: {
         RECT *r = (RECT *)lp;
+        /* 中身を作る前(窓をオーナーのモニタへ移した瞬間)にも飛んでくる。
+           そこで作り直すとコントロールが二重にできるので、まだなら何もしない。 */
+        if (!g_tab) return 0;
         SetWindowPos(hwnd, NULL, r->left, r->top, r->right - r->left, r->bottom - r->top,
                      SWP_NOZORDER | SWP_NOACTIVATE);
         rebuild(hwnd);
@@ -986,6 +1036,7 @@ void settings_open(HINSTANCE inst, HWND owner)
     }
     g_inst = inst;
     theme_init();
+    dpi_probe();
 
     icc.dwSize = sizeof(icc);
     icc.dwICC  = ICC_TAB_CLASSES | ICC_STANDARD_CLASSES;
@@ -1005,19 +1056,30 @@ void settings_open(HINSTANCE inst, HWND owner)
         registered = TRUE;
     }
 
-    make_font();
-
-    /* WS_EX_CONTROLPARENT + メインループの IsDialogMessageW で
-       Tab 移動と Enter/Esc がダイアログと同じように効くようになる。 */
+    /* まず箱だけ作る。中身の寸法は、この窓がどのモニタに載るか
+       (= どの DPI か)が決まってからでないと出せない。 */
     g_wnd = CreateWindowExW(WS_EX_CONTROLPARENT, WNDCLASS_SETTINGS,
                             MAYOUS_APPNAME L" の設定",
                             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-                            CW_USEDEFAULT, CW_USEDEFAULT, U(WIN_W), U(600),
+                            CW_USEDEFAULT, CW_USEDEFAULT, 400, 300,
                             NULL, NULL, inst, NULL);
     if (!g_wnd) return;
 
+    /* 最後は center_on() でオーナーと同じモニタへ置くので、測る前に移しておく。
+       別の DPI のモニタへ移ると WM_DPICHANGED が飛ぶが、中身がまだ無いので
+       そこでは何もしない(上の g_tab の判定)。 */
+    {
+        MONITORINFO mi;
+        mi.cbSize = sizeof(mi);
+        if (GetMonitorInfoW(MonitorFromWindow(owner ? owner : g_wnd,
+                                              MONITOR_DEFAULTTOPRIMARY), &mi))
+            SetWindowPos(g_wnd, NULL, mi.rcWork.left, mi.rcWork.top, 0, 0,
+                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
     theme_apply_window(g_wnd);
-    build(g_wnd);
+    make_font(g_wnd);          /* この窓の DPI に合わせる */
+    build(g_wnd);              /* 最後に中身に合わせて窓の大きさを決め直す */
     load_values();
     center_on(g_wnd, owner);
     ShowWindow(g_wnd, SW_SHOW);
