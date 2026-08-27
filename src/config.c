@@ -7,6 +7,10 @@
  *      win / alttab / alttab_back よく使うものの別名
  *      ctrl+alt+t                 1ステップのキーコンボ
  *      ctrl+c, ctrl+v             複数ステップ(記録したものの再生)
+ *
+ *  登録キー(RightThenKey1 など)は、トリガーにするキーを別のキーで持つ:
+ *      RightThenKey1Trigger=f13   マウスと組み合わせるキーボードのキー
+ *      RightThenKey1=ctrl+w       そのときの動作(書き方は上と同じ)
  */
 
 #include "common.h"
@@ -230,25 +234,54 @@ BOOL cfg_action_valid(const WCHAR *spec)
 static const WCHAR *kBtnName[BTN_COUNT] = {
     L"左クリック", L"右クリック", L"中クリック", L"サイドボタン1", L"サイドボタン2"
 };
-static const WCHAR *kSufName[SUF_COUNT] = {
+static const WCHAR *kSufName[SUF_KEY0] = {
     L"左クリック", L"右クリック", L"中クリック",
     L"サイドボタン1", L"サイドボタン2", L"ホイール上", L"ホイール下"
 };
+/* 登録キーの枠の名前。REGKEY_COUNT を増やすときは、ここの要素数が上限。 */
+static const WCHAR *kKeySufName[] = { L"登録キー1", L"登録キー2", L"登録キー3", L"登録キー4" };
+static const WCHAR *kKeySufIni[]  = { L"Key1",      L"Key2",      L"Key3",      L"Key4" };
 /* ini のキー名に使う識別子。既存の設定ファイルと互換を保つため
    左右は従来どおり Left / Right のまま。 */
 static const WCHAR *kBtnIni[BTN_COUNT] = { L"Left", L"Right", L"Middle", L"Side1", L"Side2" };
-static const WCHAR *kSufIni[SUF_COUNT] = {
+static const WCHAR *kSufIni[SUF_KEY0] = {
     L"Left", L"Right", L"Middle", L"Side1", L"Side2", L"WheelUp", L"WheelDown"
 };
 
 const WCHAR *cfg_btn_name(int btn) { return (btn >= 0 && btn < BTN_COUNT) ? kBtnName[btn] : L"?"; }
-const WCHAR *cfg_suf_name(int suf) { return (suf >= 0 && suf < SUF_COUNT) ? kSufName[suf] : L"?"; }
+
+const WCHAR *cfg_suf_name(int suf)
+{
+    if (suf < 0 || suf >= SUF_COUNT) return L"?";
+    return SUF_IS_KEY(suf) ? kKeySufName[suf - SUF_KEY0] : kSufName[suf];
+}
 
 void cfg_chord_ini_key(int pfx, int suf, WCHAR *out, int cch)
 {
     lstrcpynW(out, kBtnIni[pfx], cch);
     lstrcatW(out, L"Then");
-    lstrcatW(out, kSufIni[suf]);
+    lstrcatW(out, SUF_IS_KEY(suf) ? kKeySufIni[suf - SUF_KEY0] : kSufIni[suf]);
+}
+
+/* 登録キーのトリガーを書く ini キー: "RightThenKey1Trigger" */
+void cfg_regkey_ini_key(int pfx, int idx, WCHAR *out, int cch)
+{
+    cfg_chord_ini_key(pfx, SUF_KEY0 + idx, out, cch);
+    lstrcatW(out, L"Trigger");
+}
+
+/* トリガーの指定を仮想キーコードにする。空・解釈できない場合は 0。
+   修飾キーは token_to_vk が左側に寄せるので、フック側もそれに合わせること。 */
+WORD cfg_spec_to_vk(const WCHAR *spec)
+{
+    WCHAR buf[REGKEY_SPEC_CCH];
+
+    if (!spec) return 0;
+    lstrcpynW(buf, spec, ARRAYSIZE(buf));
+    str_trim(buf);
+    str_lower(buf);
+    if (!*buf || !wcscmp(buf, L"none")) return 0;
+    return token_to_vk(buf);
 }
 
 /* 押し直しの間隔として選べる値。長いほどポーリング方式のアプリに確実で、
@@ -282,15 +315,8 @@ const WCHAR *cfg_hold_ini_key(int btn)
     return (btn >= 0 && btn < BTN_COUNT) ? k[btn] : L"";
 }
 
-/* 既定値。ここに無い組み合わせはすべて none。 */
-/* 既定では左ボタンをプレフィクスにしない。
- *
- *  プレフィクスにすると、そのボタンの押下は「離すまで(または長押し判定まで)」
- *  アプリに届かない。右ボタンならほぼ気にならないが、左ボタンは
- *  ウィンドウの切り替えやドラッグの起点そのものなので、
- *  0.2 秒の遅れが「反応が鈍い」「枠を掴み損ねる」として体感に出る。
- *  使いたい人は設定画面から有効にできるが、既定では触らない。
- */
+/* 既定値。ここに無い組み合わせはすべて none。
+   左クリックは先に押す側になれない(PFX_CAN)ので、ここにも出てこない。 */
 static const WCHAR *chord_default(int pfx, int suf)
 {
     if (pfx == BTN_R && suf == SUF_L)   return L"win";
@@ -365,7 +391,6 @@ L"DragThreshold=0\r\n"
 L"\r\n"
 L"; 長押し救済: この時間押しっぱなしにすると、同時押しを諦めて本物の押下に昇格する(ms)\r\n"
 L";   0 = 無効(離すまでずっと保留する)\r\n"
-L"LeftHoldTimeoutMs=200\r\n"
 L"RightHoldTimeoutMs=0\r\n"
 L"Side1HoldTimeoutMs=0\r\n"
 L"Side2HoldTimeoutMs=0\r\n"
@@ -415,13 +440,19 @@ L"RightThenMiddle=alttab\r\n"
 L"RightThenWheelDown=hwheel_right\r\n"
 L"RightThenWheelUp=hwheel_left\r\n"
 L"\r\n"
-L"; 左クリックは既定では乗っ取らない。プレフィクスにすると、その押下は\r\n"
-L"; 離すまで(または長押し判定まで)アプリに届かないため、ウィンドウの\r\n"
-L"; 切り替えが遅れたり、枠を掴み損ねたりする。承知のうえで使う場合だけ\r\n"
-L"; LeftThen... に何か割り当てること。\r\n"
+L"; 左クリックは「先に押す側」にはできない。押下を離すまで預かることになり、\r\n"
+L"; ウィンドウの切り替えが遅れたり、枠を掴み損ねたりするため。\r\n"
+L"; (LeftThen... と書いても読み飛ばされる。後から押す側としては使える)\r\n"
 L"\r\n"
 L"; 書かれていない組み合わせは none です。設定ウィンドウから編集するのが簡単です。\r\n"
-L"; 例: Side1ThenLeft / Side2ThenWheelUp / LeftThenSide1 ...\r\n"
+L"; 例: Side1ThenLeft / Side2ThenWheelUp / Side1ThenWheelDown ...\r\n"
+L"\r\n"
+L"; 登録キー: マウスのボタンを押しながら叩くキーボードのキー。\r\n"
+L";   ...Trigger にキーを 1 つ書くと、そのキーが組み合わせの相手になる。\r\n"
+L";   Trigger が空のあいだは、キーボードには一切触らない。\r\n"
+L"; 例: 右クリックを押しながら F13 でタブを閉じる\r\n"
+L";   RightThenKey1Trigger=f13\r\n"
+L";   RightThenKey1=ctrl+w\r\n"
 L"\r\n"
 L"[Single]\r\n"
 L"; サイドボタンを単独で押したときの動作。\r\n"
@@ -497,9 +528,8 @@ void cfg_load(void)
     if (g_cfg.keyHoldMs > KEY_HOLD_MS_MAX) g_cfg.keyHoldMs = KEY_HOLD_MS_MAX;
 
     for (b = 0; b < BTN_COUNT; ++b) {
-        int def = (b == BTN_L) ? 200 : 0;
         g_cfg.holdTimeoutMs[b] = PFX_CAN(b)
-            ? GetPrivateProfileIntW(L"General", cfg_hold_ini_key(b), def, g_cfg.iniPath)
+            ? GetPrivateProfileIntW(L"General", cfg_hold_ini_key(b), 0, g_cfg.iniPath)
             : 0;
         if (g_cfg.holdTimeoutMs[b] < 0) g_cfg.holdTimeoutMs[b] = 0;
     }
@@ -512,6 +542,22 @@ void cfg_load(void)
             GetPrivateProfileStringW(L"Chords", key, chord_default(pfx, suf),
                                      v, ARRAYSIZE(v), g_cfg.iniPath);
             cfg_parse_action(v, a);
+        }
+    }
+
+    /* 登録キーのトリガー。動作のほうは上の chord ループで読み終えている。 */
+    for (pfx = 0; pfx < BTN_COUNT; ++pfx) {
+        int i;
+        for (i = 0; i < REGKEY_COUNT; ++i) {
+            g_cfg.regKeySpec[pfx][i][0] = 0;
+            g_cfg.regKeyVk[pfx][i] = 0;
+            if (!PFX_CAN(pfx)) continue;
+            cfg_regkey_ini_key(pfx, i, key, ARRAYSIZE(key));
+            GetPrivateProfileStringW(L"Chords", key, L"", v, ARRAYSIZE(v), g_cfg.iniPath);
+            str_trim(v);
+            g_cfg.regKeyVk[pfx][i] = cfg_spec_to_vk(v);
+            if (g_cfg.regKeyVk[pfx][i])
+                lstrcpynW(g_cfg.regKeySpec[pfx][i], v, REGKEY_SPEC_CCH);
         }
     }
 

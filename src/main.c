@@ -2,6 +2,8 @@
  * main.c - 常駐本体
  *   ・非表示ウィンドウ + タスクトレイ常駐
  *   ・低レベルマウスフック(WH_MOUSE_LL)の設置と後始末
+ *   ・低レベルキーボードフック(WH_KEYBOARD_LL)。登録キーを使う設定の
+ *     ときだけ張る。1 つも登録が無ければキーボードには一切触らない。
  *   ・前面ウィンドウの監視(除外アプリ / フルスクリーン時の自動停止)
  *
  *   低レベルフックはこれを設置したスレッドのメッセージループ上で呼ばれる。
@@ -51,6 +53,7 @@ void dbg(const char *fmt, ...)
 static HINSTANCE      g_inst;
 static HWND           g_hwnd;
 static HHOOK          g_mouseHook;
+static HHOOK          g_keyHook;
 static HWINEVENTHOOK  g_winEvent;
 static NOTIFYICONDATAW g_nid;
 static BOOL           g_suspended;
@@ -95,6 +98,63 @@ static void hook_remove(void)
     if (g_mouseHook) {
         UnhookWindowsHookEx(g_mouseHook);
         g_mouseHook = NULL;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/*  キーボードフック                                                   */
+/*
+ *  登録キー(マウスのボタン + キーボードのキー)のためだけに張る。
+ *  1 つも登録が無ければ張らない = キーストロークの経路には一切現れない。
+ *
+ *  フックの中で重い仕事をすると、Windows は LowLevelHooksTimeout で
+ *  こちらを見限る。chord_on_key() はプレフィクスが待機していなければ
+ *  即座に返るので、普通に文字を打っているあいだの負担はほぼ無い。
+ * ------------------------------------------------------------------ */
+
+static LRESULT CALLBACK LLKeyProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+    const KBDLLHOOKSTRUCT *k = (const KBDLLHOOKSTRUCT *)lParam;
+
+    if (nCode != HC_ACTION)
+        return CallNextHookEx(NULL, nCode, wParam, lParam);
+
+    /* 自分が注入したキーには絶対に触らない(再入と無限ループの遮断) */
+    if (k->dwExtraInfo == MAYOUS_TAG)
+        return CallNextHookEx(NULL, nCode, wParam, lParam);
+
+    if (chord_on_key((UINT)wParam, k))
+        return 1;                      /* ここでキーは消滅する */
+
+    return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
+
+/* 登録キーが 1 つでも使える状態なら TRUE。トリガーと動作の両方が要る。 */
+static BOOL needs_key_hook(void)
+{
+    int pfx, i;
+    for (pfx = 0; pfx < BTN_COUNT; ++pfx) {
+        if (!PFX_CAN(pfx)) continue;
+        for (i = 0; i < REGKEY_COUNT; ++i)
+            if (g_cfg.regKeyVk[pfx][i] &&
+                g_cfg.chord[CH_ID(pfx, SUF_KEY0 + i)].kind != ACT_NONE)
+                return TRUE;
+    }
+    return FALSE;
+}
+
+/* 設定に合わせて、キーボードフックを張る/外す */
+static void keyhook_sync(void)
+{
+    BOOL want = needs_key_hook();
+
+    if (want && !g_keyHook) {
+        g_keyHook = SetWindowsHookExW(WH_KEYBOARD_LL, LLKeyProc, g_inst, 0);
+        DBG("キーボードフック設置: %d", (int)(g_keyHook != NULL));
+    } else if (!want && g_keyHook) {
+        UnhookWindowsHookEx(g_keyHook);
+        g_keyHook = NULL;
+        DBG("キーボードフック撤去");
     }
 }
 
@@ -299,6 +359,7 @@ static void reload_config(void)
     refresh_active();
     update_suspend();
     tray_update();
+    keyhook_sync();
     if (needs_agent()) agent_ensure(); else agent_stop();
 }
 
@@ -414,6 +475,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_ENDSESSION:
         chord_reset();
         chord_pump();
+        if (g_keyHook) { UnhookWindowsHookEx(g_keyHook); g_keyHook = NULL; }
         hook_remove();
         return 0;
 
@@ -559,6 +621,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdLine, int show)
     update_suspend();
     tray_update();
 
+    keyhook_sync();
     if (needs_agent()) agent_ensure();
     SetTimer(g_hwnd, TIMER_SANITY, 1000, NULL);
 
@@ -573,6 +636,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdLine, int show)
 
     KillTimer(g_hwnd, TIMER_SANITY);
     if (g_winEvent) UnhookWinEvent(g_winEvent);
+    if (g_keyHook) { UnhookWindowsHookEx(g_keyHook); g_keyHook = NULL; }
     hook_remove();
     chord_reset();
     /* chord_reset() は注入をキューに積むだけなので、ここで必ず吐き出す。

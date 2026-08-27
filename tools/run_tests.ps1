@@ -33,7 +33,6 @@ Copy-Item (Join-Path $build 'mayous.exe') $test
 [General]
 Enabled=1
 DragThreshold=8
-LeftHoldTimeoutMs=200
 RightHoldTimeoutMs=0
 SuspendOnFullscreen=0
 [Chords]
@@ -41,10 +40,8 @@ RightThenLeft=f14
 RightThenMiddle=none
 RightThenWheelUp=hwheel_right
 RightThenWheelDown=hwheel_left
+; 左クリックは先に押す側になれない(v13)。書いても読み飛ばされる
 LeftThenRight=f13
-LeftThenMiddle=none
-LeftThenWheelUp=none
-LeftThenWheelDown=none
 [Exclude]
 Processes=
 "@ | Set-Content -Path (Join-Path $test 'mayous.ini') -Encoding ASCII
@@ -127,8 +124,9 @@ Mark 'T2 右押し+左クリック'
 [Inj]::RDown(); Pause-Ms 40; [Inj]::LDown(); Pause-Ms 30; [Inj]::LUp(); Pause-Ms 30; [Inj]::RUp()
 Pause-Ms 400
 
-# T3: 左押し + 右クリック -> F13
-Mark 'T3 左押し+右クリック'
+# T3: 左押し + 右クリック -> 左は先に押す側になれないので、どちらも素通し
+#     (右クリックは離した時に単独クリックとして出る)
+Mark 'T3 左押し+右クリック(素通し)'
 [Inj]::LDown(); Pause-Ms 40; [Inj]::RDown(); Pause-Ms 30; [Inj]::RUp(); Pause-Ms 30; [Inj]::LUp()
 Pause-Ms 400
 
@@ -145,8 +143,8 @@ Mark 'T5 右ドラッグ昇格'
 [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
 Pause-Ms 400
 
-# T6: 左の長押し -> LeftHoldTimeoutMs(200ms) で昇格するはず
-Mark 'T6 左長押し昇格'
+# T6: 左の長押し -> 左は一切乗っ取らないので、そのまま素通しするはず
+Mark 'T6 左長押し(素通し)'
 [Inj]::LDown(); Pause-Ms 600; [Inj]::LUp(); Pause-Ms 400
 
 # T7: 中ボタン(未割り当て) -> 一切触られず素通しのはず

@@ -12,8 +12,10 @@
  *          そのまま離された ─────────┴──> 単独クリックとして成立させる
  *                                          (別機能に置き換えることもできる)
  *
- *  プレフィクスになれるのは 左・右・サイド1・サイド2 の 4 つ。
+ *  プレフィクスになれるのは 右・サイド1・サイド2 の 3 つ。
  *  サフィックスはそれに中ボタンとホイール上下を加えた 7 つ。
+ *  さらに「登録キー」として、キーボードのキーをサフィックスにできる
+ *  (右クリックを押しながら F13 など)。こちらはキーボードフックで拾う。
  *
  *  自分で SendInput したイベントには MAYOUS_TAG を付け、フック側で
  *  無条件に素通しさせることで再入を断ち切っている。
@@ -40,6 +42,48 @@ typedef struct {
 static PfxSlot   g_pfx[BTN_COUNT];
 static BOOL      g_swallowUp[BTN_COUNT];   /* サフィックス役で飲み込んだ押下の離上を殺す */
 static ULONGLONG g_swallowT[BTN_COUNT];
+
+/* 登録キーとして飲み込んだキーの控え。
+   押下を握り潰したら、その離上も必ず握り潰さなければならない。片方だけ
+   世に出すと、相手のアプリにはキーが押しっぱなしのまま残る。
+   同時に押されうるトリガーは高々 BTN_COUNT × REGKEY_COUNT なので、
+   その数だけ持てば足りる。 */
+#define KEYSW_MAX (BTN_COUNT * REGKEY_COUNT)
+static WORD      g_keySwVk[KEYSW_MAX];
+static ULONGLONG g_keySwT[KEYSW_MAX];
+
+static int keysw_find(WORD vk)
+{
+    int i;
+    if (!vk) return -1;
+    for (i = 0; i < KEYSW_MAX; ++i)
+        if (g_keySwVk[i] == vk) return i;
+    return -1;
+}
+
+static void keysw_mark(WORD vk)
+{
+    int i;
+    if (keysw_find(vk) >= 0) return;
+    for (i = 0; i < KEYSW_MAX; ++i) {
+        if (g_keySwVk[i]) continue;
+        g_keySwVk[i] = vk;
+        g_keySwT[i]  = GetTickCount64();
+        return;
+    }
+}
+
+static void keysw_drop(WORD vk)
+{
+    int i = keysw_find(vk);
+    if (i >= 0) g_keySwVk[i] = 0;
+}
+
+static void keysw_clear(void)
+{
+    ZeroMemory(g_keySwVk, sizeof(g_keySwVk));
+    ZeroMemory(g_keySwT,  sizeof(g_keySwT));
+}
 
 /* ==================================================================
  *  物理ボタンの地面 (Raw Input)
@@ -715,8 +759,12 @@ void chord_recompute(void)
         if (!PFX_CAN(b)) continue;
         /* 単独クリックが「そのまま」以外なら、それだけでも乗っ取りが要る */
         if (g_cfg.single[b].kind != ACT_PASSTHRU) { g_armed[b] = TRUE; continue; }
-        for (s = 0; s < SUF_COUNT; ++s)
+        for (s = 0; s < SUF_COUNT; ++s) {
+            /* トリガーが未登録の登録キーは、動作が入っていても発火しようがない。
+               そのために押下を預かるのは丸損なので数に入れない。 */
+            if (SUF_IS_KEY(s) && !g_cfg.regKeyVk[b][s - SUF_KEY0]) continue;
             if (chord_at(b, s)) { g_armed[b] = TRUE; break; }
+        }
     }
 
     if (g_cfg.dragThreshold > 0) {
@@ -740,6 +788,7 @@ static void chord_flush(BOOL deliverPending)
 
     play_flush();       /* 再生途中のキーを押しっぱなしにしない */
     hold_end_all();
+    keysw_clear();      /* 登録キーの控えも持ち越さない */
 
     for (i = 0; i < BTN_COUNT; ++i) {
         if (g_pfx[i].st == PS_PASSTHRU)
@@ -834,6 +883,12 @@ void chord_sanity(void)
     for (i = 0; i < BTN_COUNT; ++i)
         if (g_swallowUp[i] && now - g_swallowT[i] >= 60000)
             g_swallowUp[i] = FALSE;
+
+    /* 登録キーの離上を取りこぼしていた場合の保険。ここを掃除しないと、
+       次に同じキーを押したときの離上まで巻き添えで殺してしまう。 */
+    for (i = 0; i < KEYSW_MAX; ++i)
+        if (g_keySwVk[i] && now - g_keySwT[i] >= 60000)
+            g_keySwVk[i] = 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1017,4 +1072,67 @@ BOOL chord_on_mouse(UINT msg, const MSLLHOOKSTRUCT *m)
     swallow = dispatch(msg, m);
     DBG("   -> %s", swallow ? "SWALLOW" : "pass");
     return swallow;
+}
+
+/* ------------------------------------------------------------------ */
+/*  登録キー                                                          */
+/*
+ *  マウスのボタンを押しながら、登録しておいたキーボードのキーを叩く。
+ *  ボタン同士の同時押しと決着のつけ方は同じで、違うのは入口だけ:
+ *  こちらは低レベルキーボードフック(main.c の LLKeyProc)から呼ばれる。
+ *
+ *  【割り当ての無いキーではプレフィクスを昇格させない】
+ *  ボタンが後から押された場合は、割り当てが無ければ保留を解いて世に出す
+ *  (物理状態に忠実にするため)。キーボードでこれをやってはいけない。
+ *  右ボタンを押したまま何か文字を打っただけで右クリックが確定してしまい、
+ *  メニューが飛び出す。キーは「一致したときだけ」触り、それ以外は
+ *  見なかったことにして素通しする。
+ *
+ *  フックは全キーストロークを通るので、一致しない場合は最短で返る。
+ *  そもそもプレフィクスが待機していなければ即座に抜ける。
+ * ------------------------------------------------------------------ */
+
+/* 修飾キーは左右をまとめる。設定側(token_to_vk)が左に寄せているため。 */
+static WORD key_normalize(DWORD vk)
+{
+    switch (vk) {
+    case VK_RCONTROL: case VK_CONTROL: return VK_LCONTROL;
+    case VK_RMENU:    case VK_MENU:    return VK_LMENU;
+    case VK_RSHIFT:   case VK_SHIFT:   return VK_LSHIFT;
+    default: return (WORD)vk;
+    }
+}
+
+BOOL chord_on_key(UINT msg, const KBDLLHOOKSTRUCT *k)
+{
+    WORD vk = key_normalize(k->vkCode);
+    int  p, i;
+
+    if (msg == WM_KEYUP || msg == WM_SYSKEYUP) {
+        /* 押下を握り潰したキーの離上は、必ずこちらで殺す */
+        if (keysw_find(vk) >= 0) { keysw_drop(vk); return TRUE; }
+        return FALSE;
+    }
+    if (msg != WM_KEYDOWN && msg != WM_SYSKEYDOWN) return FALSE;
+
+    /* オートリピート。既に発火済みなので握り潰すだけ(連打にしない)。 */
+    if (keysw_find(vk) >= 0) return TRUE;
+
+    if (!g_on) return FALSE;            /* 無効中は新しく乗っ取らない */
+
+    for (p = 0; p < BTN_COUNT; ++p) {
+        if (!pfx_active(p)) continue;
+        for (i = 0; i < REGKEY_COUNT; ++i) {
+            const Action *a;
+            if (g_cfg.regKeyVk[p][i] != vk) continue;
+            a = chord_at(p, SUF_KEY0 + i);
+            if (!a) continue;
+            DBG("regkey: pfx=%d key=%u -> 発火", p, (unsigned)vk);
+            fire_action(a, 0, p);
+            pfx_set(p, PS_CONSUMED);    /* プレフィクスの離上も殺す */
+            keysw_mark(vk);             /* このキーの離上も殺す     */
+            return TRUE;
+        }
+    }
+    return FALSE;
 }

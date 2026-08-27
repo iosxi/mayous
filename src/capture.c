@@ -7,6 +7,8 @@
  *    こうしないと記録中の Alt+Tab や Win キーで OS 側が反応してしまう。
  *  ・同時に押された一組を 1 ステップとして扱い、全部離れた時点で確定する。
  *    続けて別の組を押せば 2 ステップ目になる(例: ctrl+c, ctrl+v)。
+ *  ・登録キーのトリガーを決めるときだけは「キーを 1 つ」モードで動く
+ *    (capture_run_key)。押すたびに最後の 1 つで上書きする。
  *  ・キーボードを全部握り潰すので、逃げ道は必ずマウスで確保しておく。
  *    ボタンは常に押せるため、記録が暴走しても [キャンセル] で必ず抜けられる。
  *
@@ -24,13 +26,12 @@
 #define IDC_CAP_CLEAR  2
 #define IDC_CAP_CANCEL 3
 
-const WCHAR *cfg_vk_name(WORD vk);          /* config.c */
-
 static HWND   g_wnd;
 static HWND   g_hView, g_hHint;
 static HHOOK  g_kbHook;
 static HFONT  g_font;
 static BOOL   g_ok;
+static BOOL   g_oneKey;      /* トリガー用: キーを 1 つだけ記録する */
 
 /* 記録中のステップ列 */
 static KeyStep g_steps[MAX_ACTION_STEPS];
@@ -96,7 +97,9 @@ static void refresh_view_now(void)
     WCHAR spec[ACTION_SPEC_CCH];
     if (!g_hView) return;
     build_spec(spec, ARRAYSIZE(spec), TRUE);
-    SetWindowTextW(g_hView, spec[0] ? spec : L"(まだ何も記録されていません)");
+    SetWindowTextW(g_hView, spec[0] ? spec
+                                    : (g_oneKey ? L"(未設定)"
+                                                : L"(まだ何も記録されていません)"));
 }
 
 /* 押されているキーが全部離れた -> 1 ステップとして確定する */
@@ -110,6 +113,17 @@ static void commit_step(void)
 static void on_key_down(WORD vk)
 {
     int i;
+
+    /* トリガーの記録。組み合わせにはせず、最後に押したキーで上書きする。 */
+    if (g_oneKey) {
+        g_nsteps         = 1;
+        g_steps[0].nkeys = 1;
+        g_steps[0].keys[0] = vk;
+        g_nheld     = 0;
+        g_stepDirty = FALSE;
+        refresh_view();
+        return;
+    }
 
     /* 前のステップが確定済みで、かつ上限に達していたら無視 */
     if (!g_stepDirty && g_nsteps >= MAX_ACTION_STEPS) return;
@@ -148,6 +162,8 @@ static void on_key_down(WORD vk)
 static void on_key_up(WORD vk)
 {
     int i, j;
+
+    if (g_oneKey) return;               /* 押した時点で確定済み */
 
     for (i = 0; i < g_nheld; ++i) {
         if (g_held[i] != vk) continue;
@@ -227,8 +243,10 @@ static LRESULT CALLBACK CaptureProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 /* ------------------------------------------------------------------ */
 
 /* 記録ウィンドウを出して、確定したら out に設定文字列を入れて TRUE を返す。
-   呼び出し元(設定ウィンドウ)は閉じるまでブロックされる。 */
-BOOL capture_run(HINSTANCE inst, HWND owner, WCHAR *out, int cch)
+   呼び出し元(設定ウィンドウ)は閉じるまでブロックされる。
+   oneKey のときはキーを 1 つだけ記録し、何も押さずに OK なら空を返す
+   (登録キーの解除)。 */
+static BOOL capture_do(HINSTANCE inst, HWND owner, WCHAR *out, int cch, BOOL oneKey)
 {
     static BOOL registered;
     WNDCLASSEXW wc;
@@ -262,8 +280,9 @@ BOOL capture_run(HINSTANCE inst, HWND owner, WCHAR *out, int cch)
         x = y = CW_USEDEFAULT;
     }
 
+    g_oneKey = oneKey;
     g_wnd = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, WNDCLASS_CAPTURE,
-                            L"キー入力を記録",
+                            oneKey ? L"キーを登録" : L"キー入力を記録",
                             WS_POPUP | WS_CAPTION | WS_SYSMENU,
                             x, y, w, h, owner, NULL, inst, NULL);
     if (!g_wnd) return FALSE;
@@ -271,8 +290,11 @@ BOOL capture_run(HINSTANCE inst, HWND owner, WCHAR *out, int cch)
     {
         HWND c;
         c = CreateWindowExW(0, L"STATIC",
-                L"割り当てたいキーを実際に押してください。\r\n"
-                L"続けて別のキーを押すと、順番に再生される複数ステップになります。",
+                oneKey
+                ? L"マウスのボタンと組み合わせるキーを 1 つ押してください。\r\n"
+                  L"押し直すと上書きされます。何も押さずに [OK] で登録を解除します。"
+                : L"割り当てたいキーを実際に押してください。\r\n"
+                  L"続けて別のキーを押すと、順番に再生される複数ステップになります。",
                 WS_CHILD | WS_VISIBLE, 16, 12, w - 40, 40, g_wnd, NULL, inst, NULL);
         SendMessageW(c, WM_SETFONT, (WPARAM)g_font, TRUE);
         g_hHint = c;
@@ -334,5 +356,16 @@ BOOL capture_run(HINSTANCE inst, HWND owner, WCHAR *out, int cch)
     if (!g_ok) return FALSE;
     commit_step();
     build_spec(out, cch, FALSE);
-    return out[0] != 0;
+    /* トリガーは「空 = 解除」も正しい結果なので、中身の有無で判断しない。 */
+    return oneKey ? TRUE : (out[0] != 0);
+}
+
+BOOL capture_run(HINSTANCE inst, HWND owner, WCHAR *out, int cch)
+{
+    return capture_do(inst, owner, out, cch, FALSE);
+}
+
+BOOL capture_run_key(HINSTANCE inst, HWND owner, WCHAR *out, int cch)
+{
+    return capture_do(inst, owner, out, cch, TRUE);
 }

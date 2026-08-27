@@ -5,7 +5,7 @@
  *  .rc に日本語を入れると windres のコードページ解釈に振り回されるため、
  *  文字列は C ソース側(UTF-8 -> L"..." は UTF-16 になる)に置いている。
  *
- *  プレフィクスになれるボタンが 4 つ、割り当て枠が 24+2 個あるので、
+ *  プレフィクスになれるボタンが 3 つ、割り当て枠がその数だけあるので、
  *  タブでプレフィクスごとに切り替える。コントロールは全タブ分まとめて
  *  作っておき、表示・非表示だけを切り替える。
  *
@@ -30,6 +30,7 @@
 #define IDC_REC_BASE     2100            /* +CH_ID(pfx,suf) */
 #define IDC_SINGLE_BASE  2200            /* +btn */
 #define IDC_SREC_BASE    2210            /* +btn */
+#define IDC_KEYTRIG_BASE 2300            /* +btn*REGKEY_COUNT+枠 登録キーのキー */
 #define IDC_ENABLED      1100
 #define IDC_FULLSCREEN   1102
 #define IDC_HOLD_BASE    1110            /* +btn */
@@ -41,7 +42,6 @@
 #define IDC_APPLY        1132
 #define IDC_OPENINI      1133
 #define IDC_GROUP         950   /* グループ枠(ダーク時は所有者描画) */
-#define IDC_LWARN         951   /* 左クリックタブの注意書き */
 
 /* ------------------------------------------------------------------ */
 /* 一覧から選べる機能                                                  */
@@ -130,7 +130,11 @@ static HWND   g_lbl[CH_COUNT], g_cmb[CH_COUNT], g_rec[CH_COUNT];
 static HWND   g_slbl[BTN_COUNT], g_scmb[BTN_COUNT], g_srec[BTN_COUNT];
 static HWND   g_hHold[BTN_COUNT];
 static HWND   g_hDrag, g_hExclude, g_hApply;
-static HWND   g_lWarn[2];        /* 左クリックタブの注意書き */
+
+/* 登録キーのトリガー。ボタンの文字が今の登録内容そのものになる。
+   編集中の値は ini ではなくこちらに置き、[OK]/[適用] でまとめて書く。 */
+static HWND   g_trig[BTN_COUNT][REGKEY_COUNT];
+static WCHAR  g_trigSpec[BTN_COUNT][REGKEY_COUNT][REGKEY_SPEC_CCH];
 
 /* 未保存の変更があるか。[適用] の活性はこれに従う。 */
 static BOOL   g_dirty;
@@ -143,10 +147,11 @@ static void set_dirty(BOOL dirty)
     if (g_hApply) EnableWindow(g_hApply, dirty);
 }
 
-/* タブの並び。中ボタンはプレフィクスになれないので入らない。
-   よく設定するものを左に置く。左クリックは長押し判定が短く、そもそも
-   同時押しに使う機会が少ないので最後。 */
-static const int kTabPfx[] = { BTN_R, BTN_X1, BTN_X2, BTN_L };
+/* タブの並び。中ボタンと左クリックはプレフィクスになれないので入らない。
+   左クリックは、押下を離すまで預かる代償(ウィンドウの切り替えが遅れる、
+   枠を掴み損ねる)が大きく、動作の安定を優先していったん取りやめた。
+   復活させるときは PFX_CAN() と、ここへ BTN_L を戻す。 */
+static const int kTabPfx[] = { BTN_R, BTN_X1, BTN_X2 };
 #define TAB_COUNT ((int)ARRAYSIZE(kTabPfx))
 
 /* 96dpi で書いた値を実際のフォント高さに合わせて伸ばす */
@@ -239,7 +244,7 @@ static void make_font(void)
 
 static void show_tab(int tab)
 {
-    int t, suf, pfx;
+    int t, suf, pfx, i;
 
     for (t = 0; t < TAB_COUNT; ++t) {
         int show = (t == tab) ? SW_SHOW : SW_HIDE;
@@ -257,10 +262,8 @@ static void show_tab(int tab)
             ShowWindow(g_cmb[id], show);
             ShowWindow(g_rec[id], show);
         }
-        if (pfx == BTN_L) {
-            if (g_lWarn[0]) ShowWindow(g_lWarn[0], show);
-            if (g_lWarn[1]) ShowWindow(g_lWarn[1], show);
-        }
+        for (i = 0; i < REGKEY_COUNT; ++i)
+            if (g_trig[pfx][i]) ShowWindow(g_trig[pfx][i], show);
     }
 }
 
@@ -274,9 +277,26 @@ static void set_combo_text(HWND c, const WCHAR *spec)
     SetWindowTextW(c, lbl ? lbl : spec);
 }
 
+/* 登録キーのボタンに、今のトリガーを出す。未登録なら「未設定」。 */
+static void set_trig_text(int pfx, int idx)
+{
+    WCHAR lb[REGKEY_SPEC_CCH];
+    int i;
+
+    if (!g_trig[pfx][idx]) return;
+    if (!g_trigSpec[pfx][idx][0]) {
+        lstrcpynW(lb, L"未設定", ARRAYSIZE(lb));
+    } else {
+        lstrcpynW(lb, g_trigSpec[pfx][idx], ARRAYSIZE(lb));
+        for (i = 0; lb[i]; ++i)          /* f13 -> F13。ボタンの中で目立たせる */
+            if (lb[i] >= L'a' && lb[i] <= L'z') lb[i] = (WCHAR)(lb[i] - L'a' + L'A');
+    }
+    SetWindowTextW(g_trig[pfx][idx], lb);
+}
+
 static void load_values(void)
 {
-    int pfx, suf, b, t;
+    int pfx, suf, b, t, i;
     WCHAR buf[MAX_EXCLUDE], *src, *dst;
 
     for (t = 0; t < TAB_COUNT; ++t) {
@@ -285,6 +305,10 @@ static void load_values(void)
         for (suf = 0; suf < SUF_COUNT; ++suf) {
             int id = CH_ID(pfx, suf);
             if (g_cmb[id]) set_combo_text(g_cmb[id], g_cfg.chord[id].spec);
+        }
+        for (i = 0; i < REGKEY_COUNT; ++i) {
+            lstrcpynW(g_trigSpec[pfx][i], g_cfg.regKeySpec[pfx][i], REGKEY_SPEC_CCH);
+            set_trig_text(pfx, i);
         }
     }
 
@@ -339,7 +363,7 @@ static BOOL save_one(HWND combo, const WCHAR *sec, const WCHAR *key, const WCHAR
 /* 保存。問題があれば FALSE を返し、原因のコントロールへフォーカスを移す。 */
 static BOOL save_values(void)
 {
-    int t, pfx, suf, b;
+    int t, pfx, suf, b, i;
     WCHAR key[64], what[128];
     WCHAR raw[MAX_EXCLUDE], list[MAX_EXCLUDE], *src, *dst;
     BOOL ok;
@@ -366,6 +390,31 @@ static BOOL save_values(void)
                 show_tab(t);
                 return FALSE;
             }
+        }
+
+        /* 登録キーのトリガー。動作だけ選んでキーを忘れると、いつまでも
+           発火しないのに理由が見えない。ここで止めて気付いてもらう。 */
+        for (i = 0; i < REGKEY_COUNT; ++i) {
+            int id = CH_ID(pfx, SUF_KEY0 + i);
+            WCHAR text[ACTION_SPEC_CCH], spec[ACTION_SPEC_CCH];
+            if (!g_cmb[id]) continue;
+            GetWindowTextW(g_cmb[id], text, ARRAYSIZE(text));
+            label_to_spec(text, spec, ARRAYSIZE(spec));
+            if (lstrcmpiW(spec, L"none") && !g_trigSpec[pfx][i][0]) {
+                WCHAR msg[512];
+                wsprintfW(msg, L"%s に動作が割り当てられていますが、"
+                               L"組み合わせるキーが登録されていません。\r\n\r\n"
+                               L"[未設定] のボタンを押してキーを登録するか、"
+                               L"動作を「なし」にしてください。",
+                          cfg_suf_name(SUF_KEY0 + i));
+                TabCtrl_SetCurSel(g_tab, t);
+                show_tab(t);
+                MessageBoxW(g_wnd, msg, MAYOUS_APPNAME, MB_OK | MB_ICONWARNING);
+                if (g_trig[pfx][i]) SetFocus(g_trig[pfx][i]);
+                return FALSE;
+            }
+            cfg_regkey_ini_key(pfx, i, key, ARRAYSIZE(key));
+            cfg_write_str(L"Chords", key, g_trigSpec[pfx][i]);
         }
     }
 
@@ -414,11 +463,14 @@ static BOOL save_values(void)
 #define LBL_W    148
 #define CMB_W    228
 #define REC_W     62
+/* 登録キーの行だけラベルを詰めて、キーのボタンを挟む。
+   ラベル + ボタンの右端が LBL_W と揃うので、コンボの左端は他の行と同じ。 */
+#define KEYLBL_W  78
+#define TRIG_W    (LBL_W - KEYLBL_W - 6)
 
-/* タブ内の最大行数: 単独 1 + サフィックス(自分を除く) 6 */
-#define TAB_ROWS  7
-/* 左クリックタブには注意書きを 2 行入れるので、その分だけ余白を持たせる */
-#define TAB_H     (32 + TAB_ROWS * ROW_H + 22)
+/* タブ内の最大行数: 単独 1 + サフィックス(自分を除く) 6 + 登録キー */
+#define TAB_ROWS  (7 + REGKEY_COUNT)
+#define TAB_H     (32 + TAB_ROWS * ROW_H + 10)
 /* 動作: 上余白22 + チェック2行(22*2) + 長押し2行(26*2) + 距離1行(26)
         + 押し直し1行(26) + その説明1行(22) + 下余白10 */
 #define GRP2_H    (22 + 22 * 2 + 26 * 4 + 22 + 10)
@@ -439,6 +491,27 @@ static void add_row(HWND hwnd, const WCHAR *label, int y,
     fill_combo(*cmb, withPassthru);
     *rec = mk(hwnd, L"BUTTON", L"記録", BS_PUSHBUTTON | WS_TABSTOP,
               x + LBL_W + 6 + CMB_W + 6, y, REC_W, 22, recId);
+}
+
+/* 登録キーの行。ラベル + [キー] + 動作のコンボ + [記録]。
+   [キー] のボタンには今のトリガーが出ていて、押すと記録し直せる。 */
+static void add_key_row(HWND hwnd, int y, int pfx, int idx)
+{
+    const int x  = 12 + 14;
+    const int id = CH_ID(pfx, SUF_KEY0 + idx);
+    WCHAR lb[64];
+
+    wsprintfW(lb, L"＋ %s", cfg_suf_name(SUF_KEY0 + idx));
+    g_lbl[id] = mk(hwnd, L"STATIC", lb, SS_LEFT, x, y + 4, KEYLBL_W, 20, 0);
+    g_trig[pfx][idx] = mk(hwnd, L"BUTTON", L"", BS_PUSHBUTTON | WS_TABSTOP,
+                          x + KEYLBL_W + 6, y, TRIG_W, 22,
+                          IDC_KEYTRIG_BASE + pfx * REGKEY_COUNT + idx);
+    g_cmb[id] = mk(hwnd, L"COMBOBOX", L"",
+                   CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP,
+                   x + LBL_W + 6, y, CMB_W, 280, IDC_CHORD_BASE + id);
+    fill_combo(g_cmb[id], FALSE);
+    g_rec[id] = mk(hwnd, L"BUTTON", L"記録", BS_PUSHBUTTON | WS_TABSTOP,
+                   x + LBL_W + 6 + CMB_W + 6, y, REC_W, 22, IDC_REC_BASE + id);
 }
 
 /* グループ枠。ダークのときはテーマが効かないので SS_OWNERDRAW にして自分で描く。 */
@@ -570,6 +643,7 @@ static void build(HWND hwnd)
         for (suf = 0; suf < SUF_COUNT; ++suf) {
             int id = CH_ID(pfx, suf);
             WCHAR lb[64];
+            if (SUF_IS_KEY(suf)) continue;             /* 登録キーは下でまとめて */
             if (suf == pfx) continue;                  /* 自分自身とは組めない */
             wsprintfW(lb, L"+ %s", cfg_suf_name(suf));
             add_row(hwnd, lb, y, &g_lbl[id], &g_cmb[id], &g_rec[id],
@@ -577,16 +651,10 @@ static void build(HWND hwnd)
             y += ROW_H;
         }
 
-        /* 左ボタンだけは代償が大きいので、そのタブに注意書きを出す。
-           ここに割り当てると、左クリックの押下が「離すまで」アプリに
-           届かなくなり、ウィンドウの切り替えやドラッグが鈍くなる。 */
-        if (pfx == BTN_L) {
-            g_lWarn[0] = mk(hwnd, L"STATIC",
-                L"※ ここに何か割り当てると、左クリックの押下が「離すまで」アプリに届かなく",
-                SS_LEFT, 12 + 14, y + 4, WIN_W - 24 - 28, 16, IDC_LWARN);
-            g_lWarn[1] = mk(hwnd, L"STATIC",
-                L"　 なります。ウィンドウの切り替えが遅れたり、枠を掴み損ねたりします。",
-                SS_LEFT, 12 + 14, y + 20, WIN_W - 24 - 28, 16, IDC_LWARN);
+        /* 登録キーは行の作りが違うので最後にまとめて置く */
+        for (i = 0; i < REGKEY_COUNT; ++i) {
+            add_key_row(hwnd, y, pfx, i);
+            y += ROW_H;
         }
     }
     gy = m + TAB_H + 10;
@@ -602,8 +670,8 @@ static void build(HWND hwnd)
 
     /* 長押し判定は 2 列に並べる */
     {
-        static const int order[4] = { BTN_L, BTN_R, BTN_X1, BTN_X2 };
-        for (i = 0; i < 4; ++i) {
+        static const int order[3] = { BTN_R, BTN_X1, BTN_X2 };
+        for (i = 0; i < 3; ++i) {
             int col = i % 2, row = i / 2;
             int x  = m + 14 + col * (gw - 28) / 2;
             int yy = y + row * ROW_H;
@@ -652,6 +720,10 @@ static void build(HWND hwnd)
     mk(hwnd, L"STATIC",
        L"[記録] で実際にキーを押して割り当てられます。一覧に無い指定は直接入力も可能です。",
        SS_LEFT, m + 2, gy, gw - 4, 18, 0);
+    gy += 20;
+    mk(hwnd, L"STATIC",
+       L"「登録キー」はマウスと組み合わせるキーボードのキーです。左のボタンから登録します。",
+       SS_LEFT, m + 2, gy, gw - 4, 18, 0);
     gy += 22;
 
     /* --- ボタン --- */
@@ -688,8 +760,8 @@ static void rebuild(HWND hwnd)
     ZeroMemory(g_cmb,  sizeof(g_cmb));
     ZeroMemory(g_scmb, sizeof(g_scmb));
     ZeroMemory(g_hHold, sizeof(g_hHold));
+    ZeroMemory(g_trig, sizeof(g_trig));
     g_hApply = NULL;
-    ZeroMemory(g_lWarn, sizeof(g_lWarn));
     ZeroMemory(g_group, sizeof(g_group));
     g_groupN = 0;
     make_font();
@@ -729,6 +801,27 @@ static void do_capture(HWND combo)
     SetFocus(combo);
 }
 
+/* 登録キーの [キー] ボタンが押された。トリガーを記録し直す。 */
+static void do_capture_key(int pfx, int idx)
+{
+    WCHAR spec[ACTION_SPEC_CCH];
+
+    if (pfx < 0 || pfx >= BTN_COUNT || idx < 0 || idx >= REGKEY_COUNT) return;
+    if (!capture_run_key(g_inst, g_wnd, spec, ARRAYSIZE(spec))) return;
+
+    if (spec[0] && !cfg_spec_to_vk(spec)) {
+        WCHAR msg[256];
+        wsprintfW(msg, L"「%s」は組み合わせるキーにできません。\r\n"
+                       L"キーを 1 つだけ押してください。", spec);
+        MessageBoxW(g_wnd, msg, MAYOUS_APPNAME, MB_OK | MB_ICONWARNING);
+        return;
+    }
+    lstrcpynW(g_trigSpec[pfx][idx], spec, REGKEY_SPEC_CCH);
+    set_trig_text(pfx, idx);
+    set_dirty(TRUE);
+    if (g_trig[pfx][idx]) SetFocus(g_trig[pfx][idx]);
+}
+
 static LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
@@ -749,6 +842,12 @@ static LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (id >= IDC_SREC_BASE && id < IDC_SREC_BASE + BTN_COUNT) {
             do_capture(g_scmb[id - IDC_SREC_BASE]);
+            return 0;
+        }
+        if (id >= IDC_KEYTRIG_BASE &&
+            id <  IDC_KEYTRIG_BASE + BTN_COUNT * REGKEY_COUNT) {
+            int n = id - IDC_KEYTRIG_BASE;
+            do_capture_key(n / REGKEY_COUNT, n % REGKEY_COUNT);
             return 0;
         }
         /* チェックボックス・ラジオボタンの文字(隣の STATIC)が押された
@@ -853,6 +952,7 @@ static LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         ZeroMemory(g_cmb,  sizeof(g_cmb));
         ZeroMemory(g_scmb, sizeof(g_scmb));
         ZeroMemory(g_hHold, sizeof(g_hHold));
+        ZeroMemory(g_trig, sizeof(g_trig));
         if (g_font) { DeleteObject(g_font); g_font = NULL; }
         return 0;
     }

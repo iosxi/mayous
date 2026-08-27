@@ -14,7 +14,7 @@
 #include <windows.h>
 
 #define MAYOUS_APPNAME      L"Mayous"
-#define MAYOUS_VERSION      L"v12"
+#define MAYOUS_VERSION      L"v13"
 #define MAYOUS_WNDCLASS     L"MayousHiddenWnd"
 #define MAYOUS_AGENT_CLASS  L"MayousWheelAgentWnd"
 #define MAYOUS_MUTEX        L"Local\\MayousSingleInstance_{7A1C4E2B-9D3F-4A55-8C10-2E6B0F9D4A31}"
@@ -42,19 +42,36 @@
    こうしておくと押下ハンドラで添字を変換せずに済む。 */
 enum { BTN_L = 0, BTN_R = 1, BTN_M = 2, BTN_X1 = 3, BTN_X2 = 4, BTN_COUNT = 5 };
 
-/* サフィックス(後から来る入力) */
+/* 登録キー: マウスのボタンを押しながら叩くキーボードのキー。
+   どのキーをトリガーにするかは利用者が設定画面で登録する(既定は空)。
+   増やしたいときはここを 2, 3... にするだけでよい。config.c の
+   kKeySufName / kKeySufIni の要素数(4)が上限。 */
+#define REGKEY_COUNT     1
+#define REGKEY_SPEC_CCH  32
+
+/* サフィックス(後から来る入力)。
+   SUF_KEY0 から REGKEY_COUNT 個が登録キーの枠。 */
 enum {
     SUF_L = 0, SUF_R = 1, SUF_M = 2, SUF_X1 = 3, SUF_X2 = 4,
-    SUF_WUP = 5, SUF_WDN = 6, SUF_COUNT = 7
+    SUF_WUP = 5, SUF_WDN = 6,
+    SUF_KEY0 = 7,
+    SUF_COUNT = SUF_KEY0 + REGKEY_COUNT
 };
 
-/* プレフィクスはボタン添字をそのまま使う。中ボタンだけは対象外
-   (押しっぱなしにする用途が無く、オートスクロールと衝突するため)。 */
-#define PFX_CAN(btn)  ((btn) != BTN_M)
+/* そのサフィックスは登録キーか */
+#define SUF_IS_KEY(suf)  ((suf) >= SUF_KEY0)
+
+/* プレフィクスはボタン添字をそのまま使う。対象外が 2 つある。
+     中ボタン  … 押しっぱなしにする用途が無く、オートスクロールと衝突する
+     左クリック… 押下を離すまで預かる代償(ウィンドウの切り替えが遅れる、
+                  枠を掴み損ねる)が大きいので、動作の安定を優先していったん
+                  取りやめた。復活させるときはここと settings.c の kTabPfx。
+   後から押す側としてはどちらも今までどおり使える。 */
+#define PFX_CAN(btn)  ((btn) != BTN_M && (btn) != BTN_L)
 
 /* 同時押し1つ分の識別子。プレフィクスとサフィックスから機械的に決まる。 */
 #define CH_ID(pfx, suf)  ((pfx) * SUF_COUNT + (suf))
-#define CH_COUNT         (BTN_COUNT * SUF_COUNT)   /* 35 枠。実際に使うのは 24 */
+#define CH_COUNT         (BTN_COUNT * SUF_COUNT)   /* 実際に使うのは 24 + 登録キー */
 
 /* ---------------- アクション ---------------- */
 
@@ -127,6 +144,10 @@ typedef struct {
     ThemeMode theme;                   /* 設定画面の配色 */
     Action chord[CH_COUNT];
     Action single[BTN_COUNT];          /* 単独クリックの置き換え(サイドボタン用) */
+    /* 登録キーのトリガー。プレフィクスごとに別々に持つので、
+       「右クリック + F13」と「サイドボタン1 + F13」を同時に使える。 */
+    WORD   regKeyVk[BTN_COUNT][REGKEY_COUNT];                    /* 0 = 未登録 */
+    WCHAR  regKeySpec[BTN_COUNT][REGKEY_COUNT][REGKEY_SPEC_CCH]; /* 表示・保存用 */
     /* ";notepad.exe;game.exe;" 形式の小文字化済み除外リスト */
     WCHAR  exclude[MAX_EXCLUDE];
     WCHAR  iniPath[MAX_PATH];
@@ -146,6 +167,9 @@ void  cfg_write_str(const WCHAR *sec, const WCHAR *key, const WCHAR *val);
 void  cfg_write_int(const WCHAR *sec, const WCHAR *key, int val);
 void  cfg_chord_ini_key(int pfx, int suf, WCHAR *out, int cch);
 void  cfg_single_ini_key(int btn, WCHAR *out, int cch);
+void  cfg_regkey_ini_key(int pfx, int idx, WCHAR *out, int cch);
+WORD  cfg_spec_to_vk(const WCHAR *spec);   /* "f13" -> VK_F13。駄目なら 0 */
+const WCHAR *cfg_vk_name(WORD vk);         /* VK -> "f13" */
 const WCHAR *cfg_btn_name(int btn);        /* "左クリック" など       */
 const WCHAR *cfg_suf_name(int suf);        /* "ホイール上" など       */
 const WCHAR *cfg_hold_ini_key(int btn);    /* 長押し判定の ini キー   */
@@ -155,6 +179,7 @@ int   cfg_repress_gap_snap(int ms);        /* 一番近い段階の値へ丸め�
 void  chord_init(HWND hwnd);
 void  chord_recompute(void);
 BOOL  chord_on_mouse(UINT msg, const MSLLHOOKSTRUCT *m);
+BOOL  chord_on_key(UINT msg, const KBDLLHOOKSTRUCT *k);   /* 登録キー用 */
 void  chord_on_hold_timeout(int btn);
 void  chord_key_tick(void);        /* TIMER_KEYPLAY から呼ぶ */
 void  chord_key_release_tick(int pfx);  /* TIMER_KEYREL_BASE + pfx から呼ぶ */
@@ -199,6 +224,9 @@ void  startup_cleanup_legacy(void);
 
 /* capture.c - キー入力の記録 */
 BOOL  capture_run(HINSTANCE inst, HWND owner, WCHAR *out, int cch);
+/* 登録キーのトリガー用。キーを 1 つだけ記録する。
+   何も押さずに OK なら out は空 = 解除。返り値は「OK が押されたか」。 */
+BOOL  capture_run_key(HINSTANCE inst, HWND owner, WCHAR *out, int cch);
 
 /* main.c */
 extern volatile LONG g_active;   /* フックが加工してよいか(有効 && 非サスペンド) */
