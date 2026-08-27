@@ -154,7 +154,7 @@ static HWND   g_mid[8];
 static int    g_midN;
 
 /* 「停止する条件」タブの部品。中身はボタンと無関係なので別に控える。 */
-static HWND   g_exc[10];
+static HWND   g_exc[16];
 static int    g_excN;
 static HWND   g_hExcList;
 static WCHAR  g_trigSpec[BTN_COUNT][REGKEY_COUNT][REGKEY_SPEC_CCH];
@@ -555,13 +555,14 @@ static BOOL save_values(void)
 #define EXC_LBL   20    /* 「止める条件」の見出し   */
 #define EXC_EDIT  54    /* 条件のテキスト欄         */
 #define EXC_HDR   26    /* 「今開いている…」+ [更新] */
-#define EXC_LIST  92    /* ウィンドウの一覧         */
+#define EXC_LIST  74    /* ウィンドウの一覧         */
+#define EXC_NOTE1 18    /* 一覧の下の注意書き       */
 #define EXC_BTN   28    /* 追加ボタン               */
 #define EXC_NOTE  16    /* 注意書き                 */
 
 #define TAB_H_ROW (32 + TAB_ROWS * ROW_H + 10)
 #define TAB_H_EXC (34 + EXC_CHK + EXC_LBL + EXC_EDIT + EXC_HDR + \
-                   EXC_LIST + EXC_BTN + EXC_NOTE + 8)
+                   EXC_LIST + EXC_NOTE1 + EXC_BTN + EXC_NOTE + 8)
 #define TAB_H     (TAB_H_ROW > TAB_H_EXC ? TAB_H_ROW : TAB_H_EXC)
 /* 動作: 上余白22 + 長押し2行(26*2) + 距離1行(26)
         + 押し直し1行(26) + その説明1行(22) + 下余白10 */
@@ -748,11 +749,22 @@ static void build(HWND hwnd)
             g_exc[g_excN++] = mk(hwnd, L"BUTTON", L"更新", BS_PUSHBUTTON | WS_TABSTOP,
                                  x + w - 70, y, 70, 22, IDC_EXC_REFRESH);
             y += EXC_HDR;
+            /* LBS_NOINTEGRALHEIGHT が無いと、リストボックスは行が半端に
+               なるのを嫌って勝手に縮む。縮んだぶんはボタンとのあいだの
+               空白として残り、環境によって大きさが変わる(110px と指定した
+               ものが 82px になっていた)。組んだとおりの高さにならないと
+               下に何も置けないので、必ず付ける。 */
             g_hExcList = mk(hwnd, L"LISTBOX", L"",
-                            LBS_NOTIFY | WS_VSCROLL | WS_BORDER | WS_TABSTOP,
+                            LBS_NOTIFY | LBS_NOINTEGRALHEIGHT |
+                            WS_VSCROLL | WS_BORDER | WS_TABSTOP,
                             x, y, w, EXC_LIST - 4, IDC_EXC_LIST);
             g_exc[g_excN++] = g_hExcList;
             y += EXC_LIST;
+
+            g_exc[g_excN++] = mk(hwnd, L"STATIC",
+                L"※ 大文字・小文字は区別しません。* は「任意の文字列」です。",
+                SS_LEFT, x, y, w, 16, 0);
+            y += EXC_NOTE1;
 
             g_exc[g_excN++] = mk(hwnd, L"BUTTON", L"実行ファイル名を追加",
                                  BS_PUSHBUTTON | WS_TABSTOP, x, y, 170, 24, IDC_EXC_ADDEXE);
@@ -760,7 +772,7 @@ static void build(HWND hwnd)
                                  BS_PUSHBUTTON | WS_TABSTOP, x + 176, y, 170, 24, IDC_EXC_ADDTITLE);
             y += EXC_BTN;
             g_exc[g_excN++] = mk(hwnd, L"STATIC",
-                L"※ * は「任意の文字列」です。title:Minecraft* のように短くすると版が変わっても効きます。",
+                L"※ ウィンドウ名は title:Minecraft* のように短くすると、版が変わっても効きます。",
                 SS_LEFT, x, y, w, 16, 0);
             continue;
         }
