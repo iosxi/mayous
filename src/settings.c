@@ -966,6 +966,13 @@ HWND settings_hwnd(void)
     return g_wnd;
 }
 
+/* 記録ウィンドウが、設定ウィンドウと同じ字面・同じ大きさで組み立てるために使う。
+   借り物なので、向こうでは複製してから持つこと(capture.c の make_font)。 */
+HFONT settings_font(void)
+{
+    return g_font;
+}
+
 void settings_open(HINSTANCE inst, HWND owner)
 {
     WNDCLASSEXW wc;

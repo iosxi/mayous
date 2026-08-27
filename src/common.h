@@ -14,7 +14,7 @@
 #include <windows.h>
 
 #define MAYOUS_APPNAME      L"Mayous"
-#define MAYOUS_VERSION      L"v13"
+#define MAYOUS_VERSION      L"v14"
 #define MAYOUS_WNDCLASS     L"MayousHiddenWnd"
 #define MAYOUS_AGENT_CLASS  L"MayousWheelAgentWnd"
 #define MAYOUS_MUTEX        L"Local\\MayousSingleInstance_{7A1C4E2B-9D3F-4A55-8C10-2E6B0F9D4A31}"
@@ -199,6 +199,7 @@ void  agent_stop(void);
 /* settings.c - 設定ウィンドウ */
 void  settings_open(HINSTANCE inst, HWND owner);
 HWND  settings_hwnd(void);
+HFONT settings_font(void);             /* 記録ウィンドウが同じ字面を使うため */
 void  settings_apply_callback(void);   /* main.c が実装。保存直後の再読み込み */
 
 /* theme.c - システムのライト/ダークに合わせた配色 */

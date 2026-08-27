@@ -14,6 +14,13 @@
  *
  *  フックの中で SendInput をしないという原則はここでも同じだが、
  *  記録中は何も注入しないので問題にならない。
+ *
+ *  【大きさを決め打ちにしない】
+ *  かつてはウィンドウも文字の置き場所も px 決め打ちだった。フォントの
+ *  大きさや DPI が違う環境では、それだけで文章の右や下が切れる
+ *  (「…マウスで押してく」で終わる / 行の下半分が隠れる、と報告があった)。
+ *  文字の幅も高さも環境ごとに違うので、決め打ちで足りるはずがない。
+ *  そこで、出す文章を実際に測ってから、それが収まる大きさで窓を作る。
  * ================================================================== */
 
 #include "common.h"
@@ -30,6 +37,7 @@ static HWND   g_wnd;
 static HWND   g_hView, g_hHint;
 static HHOOK  g_kbHook;
 static HFONT  g_font;
+static int    g_unit = 16;   /* レイアウトの基準 = フォントの高さ */
 static BOOL   g_ok;
 static BOOL   g_oneKey;      /* トリガー用: キーを 1 つだけ記録する */
 
@@ -241,6 +249,68 @@ static LRESULT CALLBACK CaptureProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 }
 
 /* ------------------------------------------------------------------ */
+/*  レイアウト                                                         */
+/* ------------------------------------------------------------------ */
+
+/* 96dpi で書いた値を、実際のフォントの高さに合わせて伸ばす */
+static int U(int v) { return MulDiv(v, g_unit, 16); }
+
+/* 設定ウィンドウと同じ字面・同じ大きさのフォントを、自分の持ち物として作る。
+ *
+ *  借りたまま使ってはいけない。こちらはモーダルループの最中も設定ウィンドウ宛の
+ *  メッセージを配り続けるので、その間に配色が切り替わると設定ウィンドウが
+ *  自分を作り直し、こちらが握っていたフォントは削除される。複製を持てば
+ *  向こうが何をしようと影響を受けない。
+ */
+static void make_font(void)
+{
+    NONCLIENTMETRICSW ncm;
+    LOGFONTW lf;
+    HFONT src, old;
+    TEXTMETRICW tm;
+    HDC dc;
+
+    if (g_font) { DeleteObject(g_font); g_font = NULL; }
+
+    src = settings_font();
+    if (src && GetObjectW(src, sizeof(lf), &lf))
+        g_font = CreateFontIndirectW(&lf);
+    if (!g_font) {
+        ncm.cbSize = sizeof(ncm);
+        if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0))
+            g_font = CreateFontIndirectW(&ncm.lfMessageFont);
+    }
+    if (!g_font) g_font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+
+    dc  = GetDC(NULL);
+    old = (HFONT)SelectObject(dc, g_font);
+    if (GetTextMetricsW(dc, &tm)) g_unit = (int)tm.tmHeight;
+    SelectObject(dc, old);
+    ReleaseDC(NULL, dc);
+    if (g_unit < 10) g_unit = 16;
+}
+
+/* s を今のフォントで描いたときの大きさ。
+   maxW > 0 なら、その幅で折り返したときの高さを返す(STATIC の既定と同じ折り方)。
+   測るフォントと、実際にコントロールへ入れるフォントは必ず同じものにすること。 */
+static void measure(const WCHAR *s, int maxW, SIZE *out)
+{
+    HDC   dc  = GetDC(NULL);
+    HFONT old = (HFONT)SelectObject(dc, g_font);
+    UINT  fmt = DT_CALCRECT | DT_NOPREFIX;
+    RECT  r;
+
+    r.left = r.top = r.bottom = 0;
+    r.right = (maxW > 0) ? maxW : 30000;
+    if (maxW > 0) fmt |= DT_WORDBREAK;
+
+    DrawTextW(dc, s, -1, &r, fmt);
+    out->cx = r.right - r.left;
+    out->cy = r.bottom - r.top;
+
+    SelectObject(dc, old);
+    ReleaseDC(NULL, dc);
+}
 
 /* 記録ウィンドウを出して、確定したら out に設定文字列を入れて TRUE を返す。
    呼び出し元(設定ウィンドウ)は閉じるまでブロックされる。
@@ -248,12 +318,17 @@ static LRESULT CALLBACK CaptureProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
    (登録キーの解除)。 */
 static BOOL capture_do(HINSTANCE inst, HWND owner, WCHAR *out, int cch, BOOL oneKey)
 {
+    static const WCHAR *kBtn[3] = { L"消去", L"OK", L"キャンセル" };
     static BOOL registered;
     WNDCLASSEXW wc;
-    MSG msg;
-    RECT orc;
-    int x, y, w = 460, h = 210;
-    NONCLIENTMETRICSW ncm;
+    MONITORINFO mi;
+    MSG  msg;
+    RECT orc, rc;
+    SIZE hz, nz, bz;
+    const WCHAR *hint, *note;
+    int  x, y, w, h, i;
+    int  m, cw, ch, limit, btnW, btnH, viewH;
+    int  yHint, yView, yNote, yBtn;
 
     if (g_wnd) return FALSE;
 
@@ -269,9 +344,56 @@ static BOOL capture_do(HINSTANCE inst, HWND owner, WCHAR *out, int cch, BOOL one
         registered = TRUE;
     }
 
-    ncm.cbSize = sizeof(ncm);
-    if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0))
-        g_font = CreateFontIndirectW(&ncm.lfMessageFont);
+    make_font();
+
+    hint = oneKey
+         ? L"マウスのボタンと組み合わせるキーを 1 つ押してください。\r\n"
+           L"押し直すと上書きされます。何も押さずに [OK] で登録を解除します。"
+         : L"割り当てたいキーを実際に押してください。\r\n"
+           L"続けて別のキーを押すと、順番に再生される複数ステップになります。";
+    note = L"記録中はキーボードが一時的に無効になります。ボタンはマウスで押してください。";
+
+    /* 横幅は文章に合わせて伸ばすが、画面からはみ出しては元も子もない。
+       上限に当たった文章は折り返す(STATIC は既定で折り返す)。 */
+    m  = U(14);
+    mi.cbSize = sizeof(mi);
+    limit = GetMonitorInfoW(MonitorFromWindow(owner ? owner : GetDesktopWindow(),
+                                              MONITOR_DEFAULTTOPRIMARY), &mi)
+          ? (mi.rcWork.right - mi.rcWork.left) * 3 / 4
+          : U(600);
+
+    measure(hint, 0, &hz);
+    measure(note, 0, &nz);
+    cw = (hz.cx > nz.cx) ? hz.cx : nz.cx;
+    if (cw > limit - m * 2) cw = limit - m * 2;
+    if (cw < U(360))        cw = U(360);   /* 記録した内容を出す枠が狭くなりすぎない */
+    measure(hint, cw, &hz);                /* 折り返したぶん高さが伸びる */
+    measure(note, cw, &nz);
+
+    btnW = 0;
+    for (i = 0; i < 3; ++i) {
+        measure(kBtn[i], 0, &bz);
+        if (bz.cx > btnW) btnW = bz.cx;
+    }
+    btnW += U(28);                         /* 文字の左右の余白 */
+    if (btnW < U(90)) btnW = U(90);
+    btnH  = g_unit + U(12);
+    viewH = g_unit + U(14);
+
+    ch    = m;
+    yHint = ch;  ch += hz.cy + U(12);
+    yView = ch;  ch += viewH + U(12);
+    yNote = ch;  ch += nz.cy + U(16);
+    yBtn  = ch;  ch += btnH  + m;
+
+    rc.left   = 0;
+    rc.top    = 0;
+    rc.right  = cw + m * 2;
+    rc.bottom = ch;
+    AdjustWindowRectEx(&rc, WS_POPUP | WS_CAPTION | WS_SYSMENU, FALSE,
+                       WS_EX_DLGMODALFRAME | WS_EX_TOPMOST);
+    w = rc.right - rc.left;
+    h = rc.bottom - rc.top;
 
     if (GetWindowRect(owner, &orc)) {
         x = orc.left + ((orc.right - orc.left) - w) / 2;
@@ -289,34 +411,31 @@ static BOOL capture_do(HINSTANCE inst, HWND owner, WCHAR *out, int cch, BOOL one
 
     {
         HWND c;
-        c = CreateWindowExW(0, L"STATIC",
-                oneKey
-                ? L"マウスのボタンと組み合わせるキーを 1 つ押してください。\r\n"
-                  L"押し直すと上書きされます。何も押さずに [OK] で登録を解除します。"
-                : L"割り当てたいキーを実際に押してください。\r\n"
-                  L"続けて別のキーを押すと、順番に再生される複数ステップになります。",
-                WS_CHILD | WS_VISIBLE, 16, 12, w - 40, 40, g_wnd, NULL, inst, NULL);
-        SendMessageW(c, WM_SETFONT, (WPARAM)g_font, TRUE);
-        g_hHint = c;
+        g_hHint = CreateWindowExW(0, L"STATIC", hint, WS_CHILD | WS_VISIBLE,
+                m, yHint, cw, hz.cy, g_wnd, NULL, inst, NULL);
+        SendMessageW(g_hHint, WM_SETFONT, (WPARAM)g_font, TRUE);
 
+        /* 記録した内容は長くなりうる(複数ステップ)。入りきらないときは
+           途中で切らず、末尾を ... にして「続きがある」と分かるようにする。 */
         g_hView = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", L"",
-                SS_CENTER | SS_CENTERIMAGE | WS_CHILD | WS_VISIBLE,
-                16, 58, w - 40, 34, g_wnd, NULL, inst, NULL);
+                SS_CENTER | SS_CENTERIMAGE | SS_ENDELLIPSIS | WS_CHILD | WS_VISIBLE,
+                m, yView, cw, viewH, g_wnd, NULL, inst, NULL);
         SendMessageW(g_hView, WM_SETFONT, (WPARAM)g_font, TRUE);
 
-        c = CreateWindowExW(0, L"STATIC",
-                L"記録中はキーボードが一時的に無効になります。ボタンはマウスで押してください。",
-                WS_CHILD | WS_VISIBLE, 16, 98, w - 40, 20, g_wnd, NULL, inst, NULL);
+        c = CreateWindowExW(0, L"STATIC", note, WS_CHILD | WS_VISIBLE,
+                m, yNote, cw, nz.cy, g_wnd, NULL, inst, NULL);
         SendMessageW(c, WM_SETFONT, (WPARAM)g_font, TRUE);
 
-        c = CreateWindowExW(0, L"BUTTON", L"消去", WS_CHILD | WS_VISIBLE,
-                16, 130, 90, 28, g_wnd, (HMENU)IDC_CAP_CLEAR, inst, NULL);
+        c = CreateWindowExW(0, L"BUTTON", kBtn[0], WS_CHILD | WS_VISIBLE,
+                m, yBtn, btnW, btnH, g_wnd, (HMENU)IDC_CAP_CLEAR, inst, NULL);
         SendMessageW(c, WM_SETFONT, (WPARAM)g_font, TRUE);
-        c = CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE,
-                w - 220, 130, 96, 28, g_wnd, (HMENU)IDC_CAP_OK, inst, NULL);
+        c = CreateWindowExW(0, L"BUTTON", kBtn[1], WS_CHILD | WS_VISIBLE,
+                m + cw - btnW * 2 - U(8), yBtn, btnW, btnH,
+                g_wnd, (HMENU)IDC_CAP_OK, inst, NULL);
         SendMessageW(c, WM_SETFONT, (WPARAM)g_font, TRUE);
-        c = CreateWindowExW(0, L"BUTTON", L"キャンセル", WS_CHILD | WS_VISIBLE,
-                w - 116, 130, 96, 28, g_wnd, (HMENU)IDC_CAP_CANCEL, inst, NULL);
+        c = CreateWindowExW(0, L"BUTTON", kBtn[2], WS_CHILD | WS_VISIBLE,
+                m + cw - btnW, yBtn, btnW, btnH,
+                g_wnd, (HMENU)IDC_CAP_CANCEL, inst, NULL);
         SendMessageW(c, WM_SETFONT, (WPARAM)g_font, TRUE);
     }
 
