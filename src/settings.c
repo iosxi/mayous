@@ -154,7 +154,7 @@ static HWND   g_mid[8];
 static int    g_midN;
 
 /* 「停止する条件」タブの部品。中身はボタンと無関係なので別に控える。 */
-static HWND   g_exc[16];
+static HWND   g_exc[20];
 static int    g_excN;
 static HWND   g_hExcList;
 static WCHAR  g_trigSpec[BTN_COUNT][REGKEY_COUNT][REGKEY_SPEC_CCH];
@@ -551,18 +551,21 @@ static BOOL save_values(void)
 
 /* 「停止する条件」タブは行で数えられないので、縦の内訳をそのまま足す。
    ここを変えたらタブの中身の並びも同じだけ変えること(両方この定数で組む)。 */
-#define EXC_CHK   26    /* フルスクリーンのチェック */
-#define EXC_LBL   20    /* 「止める条件」の見出し   */
-#define EXC_EDIT  54    /* 条件のテキスト欄         */
-#define EXC_HDR   26    /* 「今開いている…」+ [更新] */
-#define EXC_LIST  74    /* ウィンドウの一覧         */
-#define EXC_NOTE1 18    /* 一覧の下の注意書き       */
-#define EXC_BTN   28    /* 追加ボタン               */
-#define EXC_NOTE  16    /* 注意書き                 */
+#define EXC_CHK   26    /* フルスクリーンのチェック   */
+#define EXC_LBL   20    /* 条件欄の見出し             */
+#define EXC_EDIT  54    /* 条件のテキスト欄           */
+#define EXC_HINT  17    /* 書き方の説明 1 行ぶん      */
+#define EXC_HINTN  5    /* その行数                   */
+#define EXC_GAP    8    /* 説明と一覧のあいだ         */
+#define EXC_HDR   28    /* 「今開いている…」+ 追加ボタン */
+#define EXC_LIST  74    /* ウィンドウの一覧           */
+#define EXC_REF   28    /* [更新]                     */
+#define EXC_IND   14    /* 説明の字下げ(全角 1 字ぶん) */
 
 #define TAB_H_ROW (32 + TAB_ROWS * ROW_H + 10)
-#define TAB_H_EXC (34 + EXC_CHK + EXC_LBL + EXC_EDIT + EXC_HDR + \
-                   EXC_LIST + EXC_NOTE1 + EXC_BTN + EXC_NOTE + 8)
+#define TAB_H_EXC (34 + EXC_CHK + EXC_LBL + EXC_EDIT + \
+                   EXC_HINT * EXC_HINTN + EXC_GAP + \
+                   EXC_HDR + EXC_LIST + EXC_REF + 8)
 #define TAB_H     (TAB_H_ROW > TAB_H_EXC ? TAB_H_ROW : TAB_H_EXC)
 /* 動作: 上余白22 + 長押し2行(26*2) + 距離1行(26)
         + 押し直し1行(26) + その説明1行(22) + 下余白10 */
@@ -724,10 +727,23 @@ static void build(HWND hwnd)
         int pfx = kTabPfx[t];
         y = m + 34;
 
-        /* 「停止する条件」タブ。ここだけボタンと無関係な作りになる。 */
+        /* 「停止する条件」タブ。ここだけボタンと無関係な作りになる。
+           並びは「何を止めるか」を上から順に読めるようにしてある:
+             止める条件 -> その書き方 -> 今開いている窓 -> そこから足す。
+           書き方の説明は条件の欄のすぐ下に、字下げして置く。 */
         if (pfx == TAB_EXCLUDE) {
-            const int x = 12 + 14;
-            const int w = WIN_W - 24 - 28;
+            static const WCHAR *kHint[EXC_HINTN] = {
+                L"例:  valorant.exe    title:Minecraft*    (title: を付けるとウィンドウ名)",
+                L"※ 大文字・小文字は区別しません。* は「任意の文字列」です。",
+                L"※ title:Minecraft   →  ウィンドウ名がちょうどこれ（完全一致）",
+                L"※ title:Minecraft*  →  Minecraft で始まるもの（前方一致。版が変わっても効く）",
+                L"※ title:*メモ帳*    →  どこかに メモ帳 を含むもの（部分一致）",
+            };
+            const int x  = 12 + 14;
+            const int w  = WIN_W - 24 - 28;
+            const int bw = 150;                 /* 追加ボタンの幅 */
+            int k;
+
             g_excN = 0;
             g_exc[g_excN++] = mk_check(hwnd, L"フルスクリーンのアプリが前面のときは停止する",
                                        x, y, w, IDC_FULLSCREEN);
@@ -735,7 +751,7 @@ static void build(HWND hwnd)
             y += EXC_CHK;
 
             g_exc[g_excN++] = mk(hwnd, L"STATIC",
-                L"止める条件 (1 行に 1 つ)   例: valorant.exe   title:Minecraft*",
+                L"このアプリが前面のときは停止する (1 行に 1 つ)",
                 SS_LEFT, x, y, w, 18, 0);
             y += EXC_LBL;
             g_hExclude = mk(hwnd, L"EDIT", L"",
@@ -744,16 +760,30 @@ static void build(HWND hwnd)
             g_exc[g_excN++] = g_hExclude;
             y += EXC_EDIT;
 
-            g_exc[g_excN++] = mk(hwnd, L"STATIC", L"今開いているウィンドウ",
-                                 SS_LEFT, x, y + 4, 200, 18, 0);
-            g_exc[g_excN++] = mk(hwnd, L"BUTTON", L"更新", BS_PUSHBUTTON | WS_TABSTOP,
-                                 x + w - 70, y, 70, 22, IDC_EXC_REFRESH);
+            for (k = 0; k < EXC_HINTN; ++k) {
+                g_exc[g_excN++] = mk(hwnd, L"STATIC", kHint[k], SS_LEFT,
+                                     x + EXC_IND, y, w - EXC_IND, 16, 0);
+                y += EXC_HINT;
+            }
+            y += EXC_GAP;
+
+            /* 一覧で選んだものを、上の欄へ足す。ボタンが欄の側に近いほうが
+               「どこへ入るのか」が分かりやすいので、一覧の上に置く。 */
+            g_exc[g_excN++] = mk(hwnd, L"STATIC", L"実行中アプリ",
+                                 SS_LEFT, x, y + 5, 140, 18, 0);
+            g_exc[g_excN++] = mk(hwnd, L"BUTTON", L"▲ ファイル名追加",
+                                 BS_PUSHBUTTON | WS_TABSTOP,
+                                 x + w - bw * 2 - 6, y, bw, 24, IDC_EXC_ADDEXE);
+            g_exc[g_excN++] = mk(hwnd, L"BUTTON", L"▲ ウィンドウ名追加",
+                                 BS_PUSHBUTTON | WS_TABSTOP,
+                                 x + w - bw, y, bw, 24, IDC_EXC_ADDTITLE);
             y += EXC_HDR;
+
             /* LBS_NOINTEGRALHEIGHT が無いと、リストボックスは行が半端に
-               なるのを嫌って勝手に縮む。縮んだぶんはボタンとのあいだの
-               空白として残り、環境によって大きさが変わる(110px と指定した
-               ものが 82px になっていた)。組んだとおりの高さにならないと
-               下に何も置けないので、必ず付ける。 */
+               なるのを嫌って勝手に縮む。縮んだぶんは下の空白として残り、
+               しかも縮む量はフォントの行の高さ次第で環境ごとに変わる
+               (110px と指定したものが 82px になっていた)。
+               組んだとおりの高さにならないと下に何も置けないので必ず付ける。 */
             g_hExcList = mk(hwnd, L"LISTBOX", L"",
                             LBS_NOTIFY | LBS_NOINTEGRALHEIGHT |
                             WS_VSCROLL | WS_BORDER | WS_TABSTOP,
@@ -761,19 +791,8 @@ static void build(HWND hwnd)
             g_exc[g_excN++] = g_hExcList;
             y += EXC_LIST;
 
-            g_exc[g_excN++] = mk(hwnd, L"STATIC",
-                L"※ 大文字・小文字は区別しません。* は「任意の文字列」です。",
-                SS_LEFT, x, y, w, 16, 0);
-            y += EXC_NOTE1;
-
-            g_exc[g_excN++] = mk(hwnd, L"BUTTON", L"実行ファイル名を追加",
-                                 BS_PUSHBUTTON | WS_TABSTOP, x, y, 170, 24, IDC_EXC_ADDEXE);
-            g_exc[g_excN++] = mk(hwnd, L"BUTTON", L"ウィンドウ名を追加",
-                                 BS_PUSHBUTTON | WS_TABSTOP, x + 176, y, 170, 24, IDC_EXC_ADDTITLE);
-            y += EXC_BTN;
-            g_exc[g_excN++] = mk(hwnd, L"STATIC",
-                L"※ ウィンドウ名は title:Minecraft* のように短くすると、版が変わっても効きます。",
-                SS_LEFT, x, y, w, 16, 0);
+            g_exc[g_excN++] = mk(hwnd, L"BUTTON", L"更新", BS_PUSHBUTTON | WS_TABSTOP,
+                                 x + w - 70, y, 70, 22, IDC_EXC_REFRESH);
             continue;
         }
 
