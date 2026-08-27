@@ -223,14 +223,22 @@ static void update_suspend(void)
 {
     HWND  hf = GetForegroundWindow();
     WCHAR exe[MAX_PATH];
+    WCHAR title[256];
     BOOL  susp = FALSE;
     WCHAR why[MAX_PATH] = L"";
 
     foreground_exe(hf, exe, ARRAYSIZE(exe));
 
-    if (exe[0] && cfg_is_excluded(exe)) {
+    /* ウィンドウ名も条件に使う。java.exe のように 1 つの exe が
+       別物のウィンドウを何枚も出す場合、名前でしか選り分けられない。
+       他プロセスの窓に対する GetWindowText は WM_GETTEXT を投げず、
+       OS が持っている題名を返すだけなので、相手が固まっていても待たない。 */
+    title[0] = 0;
+    if (hf) GetWindowTextW(hf, title, ARRAYSIZE(title));
+
+    if ((exe[0] || title[0]) && cfg_is_excluded(exe, title)) {
         susp = TRUE;
-        lstrcpynW(why, exe, ARRAYSIZE(why));
+        lstrcpynW(why, exe[0] ? exe : title, ARRAYSIZE(why));
     } else if (g_cfg.suspendOnFullscreen && is_fullscreen(hf)) {
         susp = TRUE;
         lstrcpynW(why, L"フルスクリーン", ARRAYSIZE(why));

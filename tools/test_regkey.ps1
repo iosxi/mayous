@@ -160,8 +160,8 @@ $trig  = [RK]::GetDlgItem($sw, $IDC_TRIG)
 $act   = [RK]::GetDlgItem($sw, $IDC_ACTION)
 $holdL = [RK]::GetDlgItem($sw, $IDC_HOLD_L)
 
-Write-Host ("  タブの数            : {0} (期待 4 = 右/サイド1/サイド2/中クリック)" -f $tabs)
-if ($tabs -ne 4) { $ng = 1 }
+Write-Host ("  タブの数            : {0} (期待 5 = 右/サイド1/サイド2/中クリック/停止する条件)" -f $tabs)
+if ($tabs -ne 5) { $ng = 1 }
 Write-Host ("  左クリックの長押し欄: {0}" -f $(if ($holdL -eq [IntPtr]::Zero) { '無し (期待どおり)' } else { 'まだ有る (NG)' }))
 if ($holdL -ne [IntPtr]::Zero) { $ng = 1 }
 Write-Host ("  登録キーのキー      : '{0}' (期待 F13)" -f (Text-Of $trig))

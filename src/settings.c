@@ -20,7 +20,12 @@
 #include "common.h"
 #include <shellapi.h>
 #include <commctrl.h>
+#include <dwmapi.h>
 #include <wchar.h>
+
+#ifndef DWMWA_CLOAKED
+#define DWMWA_CLOAKED 14
+#endif
 
 #define WNDCLASS_SETTINGS L"MayousSettingsWnd"
 
@@ -32,12 +37,15 @@
 #define IDC_SREC_BASE    2210            /* +btn */
 #define IDC_KEYTRIG_BASE 2300            /* +btn*REGKEY_COUNT+枠 登録キーのキー */
 #define IDC_SCROLLSPEED  1150            /* オートスクロールの速さ(%) */
-#define IDC_ENABLED      1100
 #define IDC_FULLSCREEN   1102
 #define IDC_HOLD_BASE    1110            /* +btn */
 #define IDC_DRAG         1119
 #define IDC_GAP_BASE     1140            /* +段階(0..REPRESS_GAP_STEPS-1) */
-#define IDC_EXCLUDE      1120
+#define IDC_EXCLUDE      1120   /* 条件のテキスト欄       */
+#define IDC_EXC_LIST     1121   /* 今開いているウィンドウ */
+#define IDC_EXC_REFRESH  1122
+#define IDC_EXC_ADDEXE   1123
+#define IDC_EXC_ADDTITLE 1124
 #define IDC_OK           1130
 #define IDC_CANCEL       1131
 #define IDC_APPLY        1132
@@ -144,12 +152,18 @@ static HWND   g_trig[BTN_COUNT][REGKEY_COUNT];
    タブを切り替えたときに一緒に消せるよう、handle を控えておく。 */
 static HWND   g_mid[8];
 static int    g_midN;
+
+/* 「停止する条件」タブの部品。中身はボタンと無関係なので別に控える。 */
+static HWND   g_exc[10];
+static int    g_excN;
+static HWND   g_hExcList;
 static WCHAR  g_trigSpec[BTN_COUNT][REGKEY_COUNT][REGKEY_SPEC_CCH];
 
 /* 未保存の変更があるか。[適用] の活性はこれに従う。 */
 static BOOL   g_dirty;
 
 static void rebuild(HWND hwnd);
+static void exc_fill_list(void);
 
 static void set_dirty(BOOL dirty)
 {
@@ -161,7 +175,15 @@ static void set_dirty(BOOL dirty)
    左クリックは、押下を離すまで預かる代償(ウィンドウの切り替えが遅れる、
    枠を掴み損ねる)が大きく、動作の安定を優先していったん取りやめた。
    復活させるときは PFX_CAN() と、ここへ BTN_L を戻す。 */
-static const int kTabPfx[] = { BTN_R, BTN_X1, BTN_X2, BTN_M };
+/* 最後の 1 枚はボタンではなく「停止する条件」。ボタン添字の代わりに
+   この番兵を入れておき、ボタンで添字を引く処理はすべて弾く。 */
+#define TAB_EXCLUDE (-1)
+static const int kTabPfx[] = { BTN_R, BTN_X1, BTN_X2, BTN_M, TAB_EXCLUDE };
+
+static const WCHAR *tab_name(int pfx)
+{
+    return (pfx == TAB_EXCLUDE) ? L"停止する条件" : cfg_btn_name(pfx);
+}
 #define TAB_COUNT ((int)ARRAYSIZE(kTabPfx))
 
 /* 96dpi で書いた値を実際のフォント高さに合わせて伸ばす */
@@ -307,6 +329,13 @@ static void show_tab(int tab)
         int show = (t == tab) ? SW_SHOW : SW_HIDE;
         pfx = kTabPfx[t];
 
+        if (pfx == TAB_EXCLUDE) {
+            for (i = 0; i < g_excN; ++i)
+                if (g_exc[i]) ShowWindow(g_exc[i], show);
+            if (show == SW_SHOW) exc_fill_list();   /* 開くたびに取り直す */
+            continue;
+        }
+
         if (g_scmb[pfx]) {
             ShowWindow(g_slbl[pfx], show);
             ShowWindow(g_scmb[pfx], show);
@@ -357,10 +386,11 @@ static void set_trig_text(int pfx, int idx)
 static void load_values(void)
 {
     int pfx, suf, b, t, i;
-    WCHAR buf[MAX_EXCLUDE], *src, *dst;
+    WCHAR buf[MAX_EXCLUDE];
 
     for (t = 0; t < TAB_COUNT; ++t) {
         pfx = kTabPfx[t];
+        if (pfx == TAB_EXCLUDE) continue;
         if (g_scmb[pfx]) set_combo_text(g_scmb[pfx], g_cfg.single[pfx].spec);
         for (suf = 0; suf < SUF_COUNT; ++suf) {
             int id = CH_ID(pfx, suf);
@@ -372,7 +402,6 @@ static void load_values(void)
         }
     }
 
-    CheckDlgButton(g_wnd, IDC_ENABLED,    g_cfg.enabled             ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(g_wnd, IDC_FULLSCREEN, g_cfg.suspendOnFullscreen ? BST_CHECKED : BST_UNCHECKED);
 
     for (b = 0; b < BTN_COUNT; ++b)
@@ -384,17 +413,10 @@ static void load_values(void)
         CheckDlgButton(g_wnd, IDC_GAP_BASE + b,
                        (kRepressGapMs[b] == g_cfg.repressGapMs) ? BST_CHECKED : BST_UNCHECKED);
 
-    /* ";a.exe;b.exe;" -> 1行1件 */
-    dst = buf;
-    for (src = g_cfg.exclude; *src; ++src) {
-        if (*src == L';') {
-            if (dst != buf && dst[-1] != L'\n' && src[1]) { *dst++ = L'\r'; *dst++ = L'\n'; }
-            continue;
-        }
-        *dst++ = *src;
-    }
-    *dst = 0;
+    cfg_exclude_text(buf, ARRAYSIZE(buf));
     SetWindowTextW(g_hExclude, buf);
+
+    exc_fill_list();          /* タブを開く前でも中身がある状態にしておく */
 
     /* ここまでの SetWindowText で EDIT が EN_CHANGE を投げてくるので、
        読み込みの最後に必ず「変更なし」へ戻す。 */
@@ -426,11 +448,12 @@ static BOOL save_values(void)
 {
     int t, pfx, suf, b, i;
     WCHAR key[64], what[128];
-    WCHAR raw[MAX_EXCLUDE], list[MAX_EXCLUDE], *src, *dst;
+    WCHAR raw[MAX_EXCLUDE];
     BOOL ok;
 
     for (t = 0; t < TAB_COUNT; ++t) {
         pfx = kTabPfx[t];
+        if (pfx == TAB_EXCLUDE) continue;
 
         if (g_scmb[pfx]) {
             cfg_single_ini_key(pfx, key, ARRAYSIZE(key));
@@ -479,8 +502,8 @@ static BOOL save_values(void)
         }
     }
 
-    cfg_write_int(L"General", L"Enabled",
-                  IsDlgButtonChecked(g_wnd, IDC_ENABLED) == BST_CHECKED);
+    /* 「有効」はトレイのメニューだけで切り替える。ここで書き戻すと、
+       トレイで止めたまま設定を開いて [OK] しただけで動き出してしまう。 */
     cfg_write_int(L"General", L"SuspendOnFullscreen",
                   IsDlgButtonChecked(g_wnd, IDC_FULLSCREEN) == BST_CHECKED);
 
@@ -502,20 +525,8 @@ static BOOL save_values(void)
             break;
         }
 
-    /* 1行1件 / カンマ区切りのどちらでも受け取り、カンマ区切りで保存する */
     GetWindowTextW(g_hExclude, raw, ARRAYSIZE(raw));
-    dst = list;
-    for (src = raw; *src; ++src) {
-        if (*src == L'\r' || *src == L'\n' || *src == L',' || *src == L';') {
-            if (dst != list && dst[-1] != L',') *dst++ = L',';
-            continue;
-        }
-        if (*src == L' ' || *src == L'\t' || *src == L'"') continue;
-        if ((size_t)(dst - list) < MAX_EXCLUDE - 2) *dst++ = *src;
-    }
-    while (dst != list && dst[-1] == L',') --dst;
-    *dst = 0;
-    cfg_write_str(L"Exclude", L"Processes", list);
+    cfg_write_exclude(raw);
 
     settings_apply_callback();      /* main.c 側で読み直して即座に反映させる */
     return TRUE;
@@ -537,11 +548,24 @@ static BOOL save_values(void)
 
 /* タブ内の最大行数: 単独 1 + サフィックス(自分を除く) 6 + 登録キー */
 #define TAB_ROWS  (7 + REGKEY_COUNT)
-#define TAB_H     (32 + TAB_ROWS * ROW_H + 10)
-/* 動作: 上余白22 + チェック2行(22*2) + 長押し2行(26*2) + 距離1行(26)
+
+/* 「停止する条件」タブは行で数えられないので、縦の内訳をそのまま足す。
+   ここを変えたらタブの中身の並びも同じだけ変えること(両方この定数で組む)。 */
+#define EXC_CHK   26    /* フルスクリーンのチェック */
+#define EXC_LBL   20    /* 「止める条件」の見出し   */
+#define EXC_EDIT  54    /* 条件のテキスト欄         */
+#define EXC_HDR   26    /* 「今開いている…」+ [更新] */
+#define EXC_LIST  92    /* ウィンドウの一覧         */
+#define EXC_BTN   28    /* 追加ボタン               */
+#define EXC_NOTE  16    /* 注意書き                 */
+
+#define TAB_H_ROW (32 + TAB_ROWS * ROW_H + 10)
+#define TAB_H_EXC (34 + EXC_CHK + EXC_LBL + EXC_EDIT + EXC_HDR + \
+                   EXC_LIST + EXC_BTN + EXC_NOTE + 8)
+#define TAB_H     (TAB_H_ROW > TAB_H_EXC ? TAB_H_ROW : TAB_H_EXC)
+/* 動作: 上余白22 + 長押し2行(26*2) + 距離1行(26)
         + 押し直し1行(26) + その説明1行(22) + 下余白10 */
-#define GRP2_H    (22 + 22 * 2 + 26 * 4 + 22 + 10)
-#define GRP3_H     82
+#define GRP2_H    (22 + 26 * 4 + 22 + 10)
 
 static void add_row(HWND hwnd, const WCHAR *label, int y,
                     HWND *lbl, HWND *cmb, HWND *rec,
@@ -690,7 +714,7 @@ static void build(HWND hwnd)
     ti.mask   = TCIF_TEXT | TCIF_IMAGE;
     ti.iImage = -1;
     for (t = 0; t < TAB_COUNT; ++t) {
-        ti.pszText = (LPWSTR)cfg_btn_name(kTabPfx[t]);
+        ti.pszText = (LPWSTR)tab_name(kTabPfx[t]);
         SendMessageW(g_tab, TCM_INSERTITEMW, (WPARAM)t, (LPARAM)&ti);
     }
 
@@ -698,6 +722,48 @@ static void build(HWND hwnd)
     for (t = 0; t < TAB_COUNT; ++t) {
         int pfx = kTabPfx[t];
         y = m + 34;
+
+        /* 「停止する条件」タブ。ここだけボタンと無関係な作りになる。 */
+        if (pfx == TAB_EXCLUDE) {
+            const int x = 12 + 14;
+            const int w = WIN_W - 24 - 28;
+            g_excN = 0;
+            g_exc[g_excN++] = mk_check(hwnd, L"フルスクリーンのアプリが前面のときは停止する",
+                                       x, y, w, IDC_FULLSCREEN);
+            g_exc[g_excN++] = GetDlgItem(hwnd, IDC_FULLSCREEN + CHECK_LABEL_OFFSET);
+            y += EXC_CHK;
+
+            g_exc[g_excN++] = mk(hwnd, L"STATIC",
+                L"止める条件 (1 行に 1 つ)   例: valorant.exe   title:Minecraft*",
+                SS_LEFT, x, y, w, 18, 0);
+            y += EXC_LBL;
+            g_hExclude = mk(hwnd, L"EDIT", L"",
+                            ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER | WS_TABSTOP,
+                            x, y, w, EXC_EDIT - 4, IDC_EXCLUDE);
+            g_exc[g_excN++] = g_hExclude;
+            y += EXC_EDIT;
+
+            g_exc[g_excN++] = mk(hwnd, L"STATIC", L"今開いているウィンドウ",
+                                 SS_LEFT, x, y + 4, 200, 18, 0);
+            g_exc[g_excN++] = mk(hwnd, L"BUTTON", L"更新", BS_PUSHBUTTON | WS_TABSTOP,
+                                 x + w - 70, y, 70, 22, IDC_EXC_REFRESH);
+            y += EXC_HDR;
+            g_hExcList = mk(hwnd, L"LISTBOX", L"",
+                            LBS_NOTIFY | WS_VSCROLL | WS_BORDER | WS_TABSTOP,
+                            x, y, w, EXC_LIST - 4, IDC_EXC_LIST);
+            g_exc[g_excN++] = g_hExcList;
+            y += EXC_LIST;
+
+            g_exc[g_excN++] = mk(hwnd, L"BUTTON", L"実行ファイル名を追加",
+                                 BS_PUSHBUTTON | WS_TABSTOP, x, y, 170, 24, IDC_EXC_ADDEXE);
+            g_exc[g_excN++] = mk(hwnd, L"BUTTON", L"ウィンドウ名を追加",
+                                 BS_PUSHBUTTON | WS_TABSTOP, x + 176, y, 170, 24, IDC_EXC_ADDTITLE);
+            y += EXC_BTN;
+            g_exc[g_excN++] = mk(hwnd, L"STATIC",
+                L"※ * は「任意の文字列」です。title:Minecraft* のように短くすると版が変わっても効きます。",
+                SS_LEFT, x, y, w, 16, 0);
+            continue;
+        }
 
         /* 中ボタンは「先に押す側」になれないので、同時押しの行は無い。
            単独で押したときの動作と、オートスクロールの速さだけを置く。 */
@@ -760,11 +826,6 @@ static void build(HWND hwnd)
     /* --- 動作 --- */
     mk_group(hwnd, L" 動作 ", m, gy, gw, GRP2_H);
     y = gy + 22;
-    mk_check(hwnd, L"有効にする", m + 14, y, gw - 28, IDC_ENABLED);
-    y += 22;
-    mk_check(hwnd, L"フルスクリーンのアプリが前面のときは停止する",
-             m + 14, y, gw - 28, IDC_FULLSCREEN);
-    y += 26;
 
     /* 長押し判定は 2 列に並べる */
     {
@@ -805,15 +866,6 @@ static void build(HWND hwnd)
        SS_LEFT, m + 14, y, gw - 28, 18, 0);
 
     gy += GRP2_H + 10;
-
-    /* --- 除外アプリ --- */
-    mk_group(hwnd, L" このアプリが前面のときは停止する ", m, gy, gw, GRP3_H);
-    mk(hwnd, L"STATIC", L"実行ファイル名を 1 行に 1 つ (例: valorant.exe)",
-       SS_LEFT, m + 14, gy + 20, gw - 28, 18, 0);
-    g_hExclude = mk(hwnd, L"EDIT", L"",
-                    ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER | WS_TABSTOP,
-                    m + 14, gy + 40, gw - 28, 34, IDC_EXCLUDE);
-    gy += GRP3_H + 8;
 
     mk(hwnd, L"STATIC",
        L"[記録] で実際にキーを押して割り当てられます。一覧に無い指定は直接入力も可能です。",
@@ -861,6 +913,9 @@ static void rebuild(HWND hwnd)
     ZeroMemory(g_trig, sizeof(g_trig));
     ZeroMemory(g_mid, sizeof(g_mid));
     g_midN = 0;
+    ZeroMemory(g_exc, sizeof(g_exc));
+    g_excN = 0;
+    g_hExcList = NULL;
     g_hApply = NULL;
     ZeroMemory(g_group, sizeof(g_group));
     g_groupN = 0;
@@ -899,6 +954,125 @@ static void do_capture(HWND combo)
         set_dirty(TRUE);      /* 記録による書き換えは通知が飛ばないので自分で */
     }
     SetFocus(combo);
+}
+
+/* ------------------------------------------------------------------ */
+/*  停止する条件                                                       */
+/*
+ *  「実行ファイル名だけでは選り分けられない」というのが出発点。
+ *  java.exe は Minecraft も起動ランチャも同じ名前で動くので、
+ *  ウィンドウ名まで見ないと片方だけ止められない。
+ *  利用者に名前を手で打たせるのは酷なので、今開いている窓を並べて
+ *  そこから選べるようにする。
+ * ------------------------------------------------------------------ */
+
+/* 一覧に載せる価値のある窓か。人の目に見えているものだけに絞る。 */
+static BOOL exc_listable(HWND h)
+{
+    DWORD pid = 0, cloak = 0;
+
+    if (!IsWindowVisible(h)) return FALSE;
+    if (GetAncestor(h, GA_ROOT) != h) return FALSE;            /* 子・持ち主付きは除く */
+    if (GetWindowLongPtrW(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) return FALSE;
+    if (!GetWindowTextLengthW(h)) return FALSE;
+
+    /* UWP は「見えていることになっているが実体は無い」窓を大量に残す。
+       DWM に聞けば分かるので、それを落とす。 */
+    if (SUCCEEDED(DwmGetWindowAttribute(h, DWMWA_CLOAKED, &cloak, sizeof(cloak))) && cloak)
+        return FALSE;
+
+    GetWindowThreadProcessId(h, &pid);
+    return pid != GetCurrentProcessId();                       /* 自分は出さない */
+}
+
+static void exc_exe_of(HWND h, WCHAR *out, int cch)
+{
+    DWORD  pid = 0;
+    HANDLE ph;
+
+    out[0] = 0;
+    GetWindowThreadProcessId(h, &pid);
+    if (!pid) return;
+    ph = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!ph) return;
+    {
+        WCHAR path[MAX_PATH];
+        DWORD n = ARRAYSIZE(path);
+        if (QueryFullProcessImageNameW(ph, 0, path, &n)) {
+            WCHAR *b = wcsrchr(path, L'\\');
+            lstrcpynW(out, b ? b + 1 : path, cch);
+        }
+    }
+    CloseHandle(ph);
+}
+
+static BOOL CALLBACK exc_enum(HWND h, LPARAM p)
+{
+    WCHAR t[192], exe[64], line[280];
+    int idx;
+
+    (void)p;
+    if (!exc_listable(h)) return TRUE;
+
+    GetWindowTextW(h, t, ARRAYSIZE(t));
+    exc_exe_of(h, exe, ARRAYSIZE(exe));
+    wsprintfW(line, L"%s    [%s]", t, exe[0] ? exe : L"?");
+
+    idx = (int)SendMessageW(g_hExcList, LB_ADDSTRING, 0, (LPARAM)line);
+    if (idx >= 0) SendMessageW(g_hExcList, LB_SETITEMDATA, (WPARAM)idx, (LPARAM)h);
+    return TRUE;
+}
+
+static void exc_fill_list(void)
+{
+    if (!g_hExcList) return;
+    SendMessageW(g_hExcList, LB_RESETCONTENT, 0, 0);
+    EnumWindows(exc_enum, 0);
+}
+
+/* 一覧で選んでいる窓から条件を 1 行足す。 */
+static void exc_add(BOOL byTitle)
+{
+    int   idx = g_hExcList ? (int)SendMessageW(g_hExcList, LB_GETCURSEL, 0, 0) : LB_ERR;
+    HWND  target;
+    WCHAR line[EXCLUDE_RULE_CCH], buf[MAX_EXCLUDE];
+    int   len;
+
+    if (idx == LB_ERR) {
+        MessageBoxW(g_wnd, L"下の一覧から、対象のウィンドウを選んでください。",
+                    MAYOUS_APPNAME, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    target = (HWND)SendMessageW(g_hExcList, LB_GETITEMDATA, (WPARAM)idx, 0);
+    if (!target || !IsWindow(target)) {
+        MessageBoxW(g_wnd, L"そのウィンドウはもう閉じられています。[更新] を押してください。",
+                    MAYOUS_APPNAME, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    if (byTitle) {
+        WCHAR t[EXCLUDE_RULE_CCH];
+        t[0] = 0;
+        GetWindowTextW(target, t, ARRAYSIZE(t) - 8);
+        if (!t[0]) return;
+        /* 末尾に * を付けて前方一致にしておく。題名は版やファイル名で
+           後ろが変わることが多いので、完全一致だとすぐ効かなくなる。 */
+        lstrcpynW(line, L"title:", ARRAYSIZE(line));
+        lstrcatW(line, t);
+        lstrcatW(line, L"*");
+    } else {
+        exc_exe_of(target, line, ARRAYSIZE(line));
+        if (!line[0]) return;
+    }
+
+    GetWindowTextW(g_hExclude, buf, ARRAYSIZE(buf));
+    len = (int)wcslen(buf);
+    if (len && buf[len - 1] != L'\n') lstrcatW(buf, L"\r\n");
+    if ((int)wcslen(buf) + (int)wcslen(line) + 4 >= MAX_EXCLUDE) return;
+    lstrcatW(buf, line);
+    lstrcatW(buf, L"\r\n");
+    SetWindowTextW(g_hExclude, buf);
+    set_dirty(TRUE);
 }
 
 /* 登録キーの [キー] ボタンが押された。トリガーを記録し直す。 */
@@ -950,11 +1124,16 @@ static LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             do_capture_key(n / REGKEY_COUNT, n % REGKEY_COUNT);
             return 0;
         }
+        if (note == BN_CLICKED) {
+            if (id == IDC_EXC_REFRESH)  { exc_fill_list(); return 0; }
+            if (id == IDC_EXC_ADDEXE)   { exc_add(FALSE);  return 0; }
+            if (id == IDC_EXC_ADDTITLE) { exc_add(TRUE);   return 0; }
+        }
+
         /* チェックボックス・ラジオボタンの文字(隣の STATIC)が押された
            -> 本体へ渡す */
         if (note == STN_CLICKED &&
-            (id == IDC_ENABLED    + CHECK_LABEL_OFFSET ||
-             id == IDC_FULLSCREEN + CHECK_LABEL_OFFSET ||
+            (id == IDC_FULLSCREEN + CHECK_LABEL_OFFSET ||
              (id >= IDC_GAP_BASE + CHECK_LABEL_OFFSET &&
               id <  IDC_GAP_BASE + CHECK_LABEL_OFFSET + REPRESS_GAP_STEPS))) {
             HWND box = GetDlgItem(hwnd, id - CHECK_LABEL_OFFSET);
@@ -976,7 +1155,7 @@ static LRESULT CALLBACK SettingsProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
            プログラムから SetWindowText した場合、EDIT だけは EN_CHANGE が
            飛んでくるので、load_values() の最後で必ず落としている。 */
         if (note == CBN_SELCHANGE || note == CBN_EDITCHANGE || note == EN_CHANGE ||
-            (note == BN_CLICKED && (id == IDC_ENABLED || id == IDC_FULLSCREEN)))
+            (note == BN_CLICKED && id == IDC_FULLSCREEN))
             set_dirty(TRUE);
 
         switch (id) {

@@ -23,6 +23,7 @@ tools/           アイコン生成、テストハーネス
                  regkey.c  … 登録キーの発火を mayous の下流から観測する
                  dpifont.c … 表示スケールとフォントの追従を数字で見る
                  scrolltest.c … オートスクロールと中クリック差し替えの実測
+                 exclude.c … 停止する条件(ウィンドウ名)の実測
                  uilib.ps1 … 他プロセスの GUI を安全に叩く共通部品
 ```
 
@@ -634,6 +635,7 @@ powershell -ExecutionPolicy Bypass -File tools\stress.ps1
 | `tools\test_regkey.ps1` | 登録キーの実測（素通し・握り潰し・遅延・押しっぱなし）と設定画面 |
 | `tools\dpifont.c` | 表示スケールを変えたときのフォントの追従（`-watch` で観察） |
 | `tools\test_autoscroll.ps1` | オートスクロール（食べ・凍結・ホイール化・復帰）と中クリック差し替え |
+| `tools\test_exclude.ps1` | 停止する条件（ウィンドウ名の一致・名前変更への追随・一覧からの追加） |
 | `tools\shot_settings.ps1` | 設定画面のキャプチャ（目視確認用） |
 
 ### テストを書くときの落とし穴

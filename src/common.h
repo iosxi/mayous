@@ -14,7 +14,7 @@
 #include <windows.h>
 
 #define MAYOUS_APPNAME      L"Mayous"
-#define MAYOUS_VERSION      L"v16"
+#define MAYOUS_VERSION      L"v17"
 #define MAYOUS_WNDCLASS     L"MayousHiddenWnd"
 #define MAYOUS_AGENT_CLASS  L"MayousWheelAgentWnd"
 #define MAYOUS_MUTEX        L"Local\\MayousSingleInstance_{7A1C4E2B-9D3F-4A55-8C10-2E6B0F9D4A31}"
@@ -110,7 +110,19 @@ typedef enum { THEME_SYSTEM = 0, THEME_LIGHT, THEME_DARK } ThemeMode;
 
 /* ---------------- 設定 ---------------- */
 
-#define MAX_EXCLUDE 2048
+/* 停止する条件。
+   1 つの規則は「実行ファイル名」か「ウィンドウ名」のどちらかを見る。
+   java.exe のように 1 つの exe が別物のウィンドウを何枚も出す場合、
+   実行ファイル名だけでは選り分けられないため、ウィンドウ名も見る。
+   pat には * を書ける(「任意の文字列」)。大文字小文字は区別しない。 */
+#define MAX_EXCLUDE       2048   /* 設定画面のテキスト欄の大きさ */
+#define MAX_EXCLUDE_RULES 64
+#define EXCLUDE_RULE_CCH  160
+
+typedef struct {
+    BOOL  byTitle;                 /* TRUE=ウィンドウ名 / FALSE=実行ファイル名 */
+    WCHAR pat[EXCLUDE_RULE_CCH];
+} ExcludeRule;
 
 /* 注入したキーを「最低でも」押しておく時間。
    同時押しに割り当てたキーはプレフィクスを離すまで押しっぱなしにするので、
@@ -159,8 +171,8 @@ typedef struct {
        「右クリック + F13」と「サイドボタン1 + F13」を同時に使える。 */
     WORD   regKeyVk[BTN_COUNT][REGKEY_COUNT];                    /* 0 = 未登録 */
     WCHAR  regKeySpec[BTN_COUNT][REGKEY_COUNT][REGKEY_SPEC_CCH]; /* 表示・保存用 */
-    /* ";notepad.exe;game.exe;" 形式の小文字化済み除外リスト */
-    WCHAR  exclude[MAX_EXCLUDE];
+    ExcludeRule exclude[MAX_EXCLUDE_RULES];
+    int         excludeN;
     WCHAR  iniPath[MAX_PATH];
 } Config;
 
@@ -171,7 +183,10 @@ void  cfg_resolve_path(void);
 BOOL  cfg_path_writable(void);
 void  cfg_load(void);
 BOOL  cfg_write_default_if_missing(void);
-BOOL  cfg_is_excluded(const WCHAR *exeName);
+BOOL  cfg_is_excluded(const WCHAR *exeName, const WCHAR *title);
+/* 設定画面との受け渡し。1 行 1 規則のテキストにする / から読む。 */
+void  cfg_exclude_text(WCHAR *out, int cch);
+void  cfg_write_exclude(const WCHAR *text);
 BOOL  cfg_parse_action(const WCHAR *src, Action *a);   /* 解釈できたら TRUE */
 BOOL  cfg_action_valid(const WCHAR *spec);
 void  cfg_write_str(const WCHAR *sec, const WCHAR *key, const WCHAR *val);

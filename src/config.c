@@ -10,6 +10,11 @@
  *      ctrl+alt+t                 1ステップのキーコンボ
  *      ctrl+c, ctrl+v             複数ステップ(記録したものの再生)
  *
+ *  [Exclude] の Rule1, Rule2, ... は「前面に来たら止める」条件:
+ *      valorant.exe            実行ファイル名(既定。* を書ける)
+ *      title:Minecraft*        ウィンドウ名の前方一致
+ *      title:*メモ帳*          ウィンドウ名の部分一致
+ *
  *  登録キー(RightThenKey1 など)は、トリガーにするキーを別のキーで持つ:
  *      RightThenKey1Trigger=f13   マウスと組み合わせるキーボードのキー
  *      RightThenKey1=ctrl+w       そのときの動作(書き方は上と同じ)
@@ -246,6 +251,125 @@ BOOL cfg_action_valid(const WCHAR *spec)
 {
     Action a;
     return cfg_parse_action(spec, &a);
+}
+
+/* ------------------------------------------------------------------ */
+/* 停止する条件                                                        */
+/* ------------------------------------------------------------------ */
+
+static WCHAR wlower(WCHAR c)
+{
+    return (c >= L'A' && c <= L'Z') ? (WCHAR)(c - L'A' + L'a') : c;
+}
+
+/* * だけのワイルドカード照合。大文字小文字は区別しない。
+   ばらばらの位置に * がいくつあってもよいので、素直な後戻り法で書く
+   (相手は高々ウィンドウ名 1 本、1 秒に 1 回。速さは要らない)。 */
+static BOOL wild_match(const WCHAR *pat, const WCHAR *s)
+{
+    const WCHAR *star = NULL, *mark = NULL;
+
+    while (*s) {
+        if (*pat == L'*') {
+            star = pat++;
+            mark = s;
+        } else if (wlower(*pat) == wlower(*s)) {
+            ++pat; ++s;
+        } else if (star) {
+            pat = star + 1;
+            s   = ++mark;
+        } else {
+            return FALSE;
+        }
+    }
+    while (*pat == L'*') ++pat;
+    return *pat == 0;
+}
+
+/* 1 行を規則にする。空行とコメントは FALSE(読み飛ばす)。 */
+static BOOL parse_exclude_line(const WCHAR *line, ExcludeRule *r)
+{
+    WCHAR buf[EXCLUDE_RULE_CCH];
+
+    lstrcpynW(buf, line, ARRAYSIZE(buf));
+    str_trim(buf);
+    if (!buf[0] || buf[0] == L';' || buf[0] == L'#') return FALSE;
+
+    ZeroMemory(r, sizeof(*r));
+    if (!wcsncmp(buf, L"title:", 6) || !wcsncmp(buf, L"TITLE:", 6)) {
+        WCHAR *p = buf + 6;
+        str_trim(p);
+        if (!*p) return FALSE;
+        r->byTitle = TRUE;
+        lstrcpynW(r->pat, p, EXCLUDE_RULE_CCH);
+    } else {
+        lstrcpynW(r->pat, buf, EXCLUDE_RULE_CCH);
+    }
+    return TRUE;
+}
+
+BOOL cfg_is_excluded(const WCHAR *exeName, const WCHAR *title)
+{
+    int i;
+
+    for (i = 0; i < g_cfg.excludeN; ++i) {
+        const ExcludeRule *r = &g_cfg.exclude[i];
+        const WCHAR *s = r->byTitle ? title : exeName;
+        if (!s || !*s) continue;
+        if (wild_match(r->pat, s)) return TRUE;
+    }
+    return FALSE;
+}
+
+/* 設定画面のテキスト欄へ出す(1 行 1 規則) */
+void cfg_exclude_text(WCHAR *out, int cch)
+{
+    int i;
+
+    out[0] = 0;
+    for (i = 0; i < g_cfg.excludeN; ++i) {
+        if (out[0]) lstrcatW(out, L"\r\n");
+        if ((int)wcslen(out) + EXCLUDE_RULE_CCH + 8 >= cch) break;
+        if (g_cfg.exclude[i].byTitle) lstrcatW(out, L"title:");
+        lstrcatW(out, g_cfg.exclude[i].pat);
+    }
+}
+
+/* 設定画面のテキスト欄から ini へ。Rule1.. に書き、余った番号は消す。 */
+void cfg_write_exclude(const WCHAR *text)
+{
+    WCHAR line[EXCLUDE_RULE_CCH], key[32];
+    const WCHAR *p = text;
+    ExcludeRule r;
+    int n = 0, i;
+
+    for (;;) {
+        int len = 0;
+        while (*p == L'\r' || *p == L'\n') ++p;
+        if (!*p) break;
+        while (*p && *p != L'\r' && *p != L'\n') {
+            if (len < EXCLUDE_RULE_CCH - 1) line[len++] = *p;
+            ++p;
+        }
+        line[len] = 0;
+        if (!parse_exclude_line(line, &r)) continue;
+        if (n >= MAX_EXCLUDE_RULES) break;
+        ++n;
+        wsprintfW(key, L"Rule%d", n);
+        {
+            WCHAR val[EXCLUDE_RULE_CCH + 8];
+            val[0] = 0;
+            if (r.byTitle) lstrcatW(val, L"title:");
+            lstrcatW(val, r.pat);
+            cfg_write_str(L"Exclude", key, val);
+        }
+    }
+    for (i = n + 1; i <= MAX_EXCLUDE_RULES; ++i) {
+        wsprintfW(key, L"Rule%d", i);
+        WritePrivateProfileStringW(L"Exclude", key, NULL, g_cfg.iniPath);
+    }
+    /* 古い形式は役目を終えたので消す(読み込みでは今も受け付ける) */
+    WritePrivateProfileStringW(L"Exclude", L"Processes", NULL, g_cfg.iniPath);
 }
 
 /* ------------------------------------------------------------------ */
@@ -489,8 +613,18 @@ L"Side2Alone=passthru\r\n"
 L"MiddleAlone=passthru\r\n"
 L"\r\n"
 L"[Exclude]\r\n"
-L"; ここに書いた実行ファイルが前面のあいだは全機能を停止する。カンマ区切り。\r\n"
-L"Processes=\r\n";
+L"; ここに書いた条件のウィンドウが前面のあいだは全機能を停止する。\r\n"
+L"; Rule1, Rule2, ... と番号を振って 1 行に 1 つ書く。\r\n"
+L";\r\n"
+L";   valorant.exe        実行ファイル名(既定)\r\n"
+L";   title:Minecraft*    ウィンドウ名。* は「任意の文字列」\r\n"
+L";   title:*メモ帳*      前後に * を付ければ部分一致になる\r\n"
+L";\r\n"
+L"; 大文字小文字は区別しない。実行ファイル名だけでは選り分けられない\r\n"
+L"; (java.exe が別物のウィンドウを何枚も出す、など)ときはウィンドウ名を使う。\r\n"
+L"; 設定画面の「停止する条件」タブから、今開いているウィンドウを選んで足せる。\r\n"
+L";\r\n"
+L"; Rule1=title:Minecraft*\r\n";
 
 BOOL cfg_write_default_if_missing(void)
 {
@@ -604,32 +738,29 @@ void cfg_load(void)
         cfg_parse_action(v, a);
     }
 
-    /* 除外リストを ";a.exe;b.exe;" 形式(小文字)へ正規化しておく */
-    GetPrivateProfileStringW(L"Exclude", L"Processes", L"", raw, ARRAYSIZE(raw), g_cfg.iniPath);
-    str_lower(raw);
-    dst = g_cfg.exclude;
-    *dst++ = L';';
-    for (src = raw; *src; ++src) {
-        if (*src == L' ' || *src == L'\t' || *src == L'"') continue;
-        if (*src == L',' || *src == L';') {
-            if (dst[-1] != L';') *dst++ = L';';
-            continue;
-        }
-        if ((size_t)(dst - g_cfg.exclude) < MAX_EXCLUDE - 3) *dst++ = *src;
+    /* 停止する条件。Rule1, Rule2, ... を順に読む。 */
+    g_cfg.excludeN = 0;
+    for (b = 1; b <= MAX_EXCLUDE_RULES; ++b) {
+        WCHAR rk[32];
+        wsprintfW(rk, L"Rule%d", b);
+        GetPrivateProfileStringW(L"Exclude", rk, L"", v, ARRAYSIZE(v), g_cfg.iniPath);
+        if (parse_exclude_line(v, &g_cfg.exclude[g_cfg.excludeN]))
+            ++g_cfg.excludeN;
     }
-    if (dst[-1] != L';') *dst++ = L';';
-    *dst = 0;
-    if (!wcscmp(g_cfg.exclude, L";")) g_cfg.exclude[0] = 0;
-}
 
-BOOL cfg_is_excluded(const WCHAR *exeName)
-{
-    WCHAR pat[MAX_PATH + 2];
-
-    if (!g_cfg.exclude[0] || !exeName || !*exeName) return FALSE;
-    pat[0] = L';';
-    lstrcpynW(pat + 1, exeName, MAX_PATH);
-    str_lower(pat + 1);
-    lstrcatW(pat, L";");
-    return wcsstr(g_cfg.exclude, pat) != NULL;
+    /* 古い形式 (Processes=a.exe,b.exe) も読む。設定を保存した時点で
+       Rule1.. へ移り、こちらは消える。 */
+    GetPrivateProfileStringW(L"Exclude", L"Processes", L"", raw, ARRAYSIZE(raw), g_cfg.iniPath);
+    dst = raw;
+    for (src = raw; ; ++src) {
+        WCHAR save;
+        if (*src != L',' && *src != L';' && *src != 0) continue;
+        save = *src;
+        *src = 0;
+        if (g_cfg.excludeN < MAX_EXCLUDE_RULES &&
+            parse_exclude_line(dst, &g_cfg.exclude[g_cfg.excludeN]))
+            ++g_cfg.excludeN;
+        if (!save) break;
+        dst = src + 1;
+    }
 }
