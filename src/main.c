@@ -499,16 +499,24 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 /* ================================================================== */
 
+/* ホイールを注入する動作か。オートスクロールとズームも中身はホイール。 */
+static BOOL kind_needs_agent(ActionKind k)
+{
+    return k == ACT_HWHEEL_LEFT || k == ACT_HWHEEL_RIGHT ||
+           k == ACT_ZOOM_IN     || k == ACT_ZOOM_OUT     ||
+           k == ACT_AUTOSCROLL;
+}
+
 /* ホイール系の割り当てが1つでもあれば、注入用の子プロセスが要る。
-   オートスクロールもホイールを注入するので同じく必要。 */
+   ズームはホイール以外のサフィックスにも割り当てられるので、
+   ホイールの枠だけを見るのでは足りない。全部の枠を見る。 */
 static BOOL needs_agent(void)
 {
-    int pfx;
-    for (pfx = 0; pfx < BTN_COUNT; ++pfx) {
-        if (g_cfg.single[pfx].kind == ACT_AUTOSCROLL)                return TRUE;
-        if (g_cfg.chord[CH_ID(pfx, SUF_WUP)].kind != ACT_NONE) return TRUE;
-        if (g_cfg.chord[CH_ID(pfx, SUF_WDN)].kind != ACT_NONE) return TRUE;
-    }
+    int i;
+    for (i = 0; i < BTN_COUNT; ++i)
+        if (kind_needs_agent(g_cfg.single[i].kind)) return TRUE;
+    for (i = 0; i < CH_COUNT; ++i)
+        if (kind_needs_agent(g_cfg.chord[i].kind)) return TRUE;
     return FALSE;
 }
 

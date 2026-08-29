@@ -154,7 +154,7 @@ static const DWORD kXData[BTN_COUNT] = { 0, 0, 0, XBUTTON1, XBUTTON2 };
  *  フックから戻った直後に処理されるので、体感上の遅れは無い。
  * ================================================================== */
 
-enum { Q_CLICK, Q_DOWN, Q_UP, Q_KEYS, Q_HWHEEL, Q_VWHEEL, Q_DRAG_START,
+enum { Q_CLICK, Q_DOWN, Q_UP, Q_KEYS, Q_HWHEEL, Q_VWHEEL, Q_ZOOM, Q_DRAG_START,
        Q_HOLD_DOWN, Q_HOLD_UP, Q_MARK_ON, Q_MARK_OFF };
 
 typedef struct {
@@ -431,6 +431,7 @@ void chord_pump(void)
             agent_send_wheel(it.amount, TRUE);
             break;
         case Q_VWHEEL:  agent_send_wheel(it.amount, FALSE); break;
+        case Q_ZOOM:    agent_send_zoom(it.amount);         break;
         case Q_MARK_ON: overlay_show(it.to);                break;
         case Q_MARK_OFF: overlay_hide();                    break;
         }
@@ -443,6 +444,7 @@ static void inject_button(int btn, BOOL down) { q_push(down ? Q_DOWN : Q_UP, btn
 static void inject_click(int btn)             { q_push(Q_CLICK, btn, 0, NULL); }
 static void inject_hwheel(int amount)         { q_push(Q_HWHEEL, 0, amount, NULL); }
 static void inject_vwheel(int amount)         { q_push(Q_VWHEEL, 0, amount, NULL); }
+static void inject_zoom(int amount)           { q_push(Q_ZOOM, 0, amount, NULL); }
 static void inject_keys(const Action *a)      { q_push(Q_KEYS, 0, 0, a); }
 
 /* ================================================================== */
@@ -743,6 +745,10 @@ static void fire_action(const Action *a, int wheelAmount, int pfx)
         break;
     case ACT_HWHEEL_LEFT:  inject_hwheel(-wheelAmount);  break;
     case ACT_HWHEEL_RIGHT: inject_hwheel(+wheelAmount);  break;
+    /* ズームはホイール以外(サイドボタン・登録キー)にも割り当てられる。
+       その場合 wheelAmount が無いので、1 段ぶんを自分で決める。 */
+    case ACT_ZOOM_IN:      inject_zoom(+(wheelAmount ? wheelAmount : WHEEL_DELTA)); break;
+    case ACT_ZOOM_OUT:     inject_zoom(-(wheelAmount ? wheelAmount : WHEEL_DELTA)); break;
     case ACT_CLICK:        inject_click(a->btn);         break;
     case ACT_AUTOSCROLL: {
         POINT p;

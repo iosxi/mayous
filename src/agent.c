@@ -45,11 +45,37 @@ static void agent_emit(int amount, BOOL horizontal)
     SendInput(1, &in, sizeof(in));
 }
 
+/* Ctrl を押しながらの縦ホイール(アプリ側の拡大・縮小)。
+   親側で Ctrl を押してからホイールだけを頼む作りにすると、こちらへ届くのが
+   PostMessage 経由で遅れるぶん、Ctrl を離した後にホイールが出てしまうことが
+   ある。3 つを 1 回の SendInput にまとめて、入力の並びごと固定してしまう。 */
+static void agent_emit_zoom(int amount)
+{
+    INPUT in[3];
+    ZeroMemory(in, sizeof(in));
+
+    in[0].type           = INPUT_KEYBOARD;
+    in[0].ki.wVk         = VK_CONTROL;
+    in[0].ki.wScan       = (WORD)MapVirtualKeyW(VK_CONTROL, MAPVK_VK_TO_VSC);
+    in[0].ki.dwExtraInfo = MAYOUS_TAG;
+
+    in[1].type           = INPUT_MOUSE;
+    in[1].mi.dwFlags     = MOUSEEVENTF_WHEEL;
+    in[1].mi.mouseData   = (DWORD)amount;
+    in[1].mi.dwExtraInfo = MAYOUS_TAG;
+
+    in[2]                = in[0];
+    in[2].ki.dwFlags     = KEYEVENTF_KEYUP;
+
+    SendInput(3, in, sizeof(INPUT));
+}
+
 static LRESULT CALLBACK AgentProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     case WM_MAYOUS_AGENT_WHEEL:
-        agent_emit((int)(LONG_PTR)lp, wp == 0);
+        if (wp == 2) agent_emit_zoom((int)(LONG_PTR)lp);
+        else         agent_emit((int)(LONG_PTR)lp, wp == 0);
         return 0;
     case WM_DESTROY:
         PostQuitMessage(0);
@@ -143,6 +169,15 @@ void agent_send_wheel(int amount, BOOL horizontal)
     }
     PostMessageW(g_agentWnd, WM_MAYOUS_AGENT_WHEEL,
                  horizontal ? 0 : 1, (LPARAM)amount);
+}
+
+void agent_send_zoom(int amount)
+{
+    if (!agent_alive()) {
+        agent_ensure();      /* 取りこぼしは1ノッチだけ。次からは効く。 */
+        return;
+    }
+    PostMessageW(g_agentWnd, WM_MAYOUS_AGENT_WHEEL, 2, (LPARAM)amount);
 }
 
 void agent_stop(void)

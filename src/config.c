@@ -4,6 +4,7 @@
  *      none                       何もしない
  *      passthru                   単独クリック用。手を加えずそのまま通す
  *      hwheel_left / hwheel_right 水平ホイール
+ *      zoom_in / zoom_out         Ctrl+ホイール(拡大・縮小)
  *      click:middle               別のマウスボタンを 1 回出す(middleclick も可)
  *      autoscroll                 押して離すとスクロール・モードに入る
  *      win / alttab / alttab_back よく使うものの別名
@@ -199,6 +200,8 @@ BOOL cfg_parse_action(const WCHAR *src, Action *a)
     }
     if (!wcscmp(buf, L"hwheel_left")  || !wcscmp(buf, L"wheelleft"))  { a->kind = ACT_HWHEEL_LEFT;  return TRUE; }
     if (!wcscmp(buf, L"hwheel_right") || !wcscmp(buf, L"wheelright")) { a->kind = ACT_HWHEEL_RIGHT; return TRUE; }
+    if (!wcscmp(buf, L"zoom_in")  || !wcscmp(buf, L"zoomin"))  { a->kind = ACT_ZOOM_IN;  return TRUE; }
+    if (!wcscmp(buf, L"zoom_out") || !wcscmp(buf, L"zoomout")) { a->kind = ACT_ZOOM_OUT; return TRUE; }
     if (!wcscmp(buf, L"autoscroll")) { a->kind = ACT_AUTOSCROLL; return TRUE; }
     {   /* 別のマウスボタンを出す。"click:middle" と "middleclick" のどちらでも。 */
         static const struct { const WCHAR *name; int btn; } kClick[] = {
@@ -557,7 +560,7 @@ L"; ここで間を空けないと、キーの状態を一定間隔で見に行�
 L"; 離した瞬間が見えず、2 回目以降が無かったことになる。逆にこの時間は\r\n"
 L"; そのまま体感の遅れになるので、相手に合わせて選ぶ。\r\n"
 L"; 押し直す先が別のキー(ホイール上下に別々のキーなど)なら間は空けない。\r\n"
-L"RepressGapMs=120\r\n"
+L"RepressGapMs=40\r\n"
 L"\r\n"
 L"; フルスクリーンのアプリが前面のあいだは自動で停止する(ゲーム対策)\r\n"
 L"SuspendOnFullscreen=1\r\n"
@@ -569,6 +572,7 @@ L"[Chords]\r\n"
 L"; 書ける値:\r\n"
 L";   none                        何もしない(そのボタンを一切乗っ取らない)\r\n"
 L";   hwheel_left / hwheel_right  水平ホイール\r\n"
+L";   zoom_in / zoom_out          Ctrl+ホイール(拡大・縮小)\r\n"
 L";   win / alttab / alttab_back  よく使うものの別名\r\n"
 L";   ctrl+w, alt+left, f5 ...    任意のキーコンボ\r\n"
 L";   ctrl+c, ctrl+v              カンマ区切りで複数ステップ(記録の再生)\r\n"

@@ -23,6 +23,7 @@ tools/           アイコン生成、テストハーネス
                  regkey.c  … 登録キーの発火を mayous の下流から観測する
                  dpifont.c … 表示スケールとフォントの追従を数字で見る
                  scrolltest.c … オートスクロールと中クリック差し替えの実測
+                 zoomtest.c … ズーム(Ctrl+ホイール)がアプリにどう届くかの実測
                  exclude.c … 停止する条件(ウィンドウ名)の実測
                  uilib.ps1 … 他プロセスの GUI を安全に叩く共通部品
 ```
@@ -181,6 +182,15 @@ Windows は **`WH_MOUSE_LL` を保持しているプロセスからのホイー�
 一時的にフックを外して注入する案は、その隙間に生のホイールが素通ししてしまい、
 連続スクロール中に縦スクロールが漏れるため採用していません。
 
+**ズーム(Ctrl+ホイール)も、Ctrl ごと子プロセスに出させます。** アプリが
+「Ctrl+ホイール」と判断するのは `WM_MOUSEWHEEL` の `wParam` に `MK_CONTROL` が
+立っているかどうかです。親で Ctrl を押してからホイールだけを子プロセスに頼むと、
+依頼が `PostMessage` 経由で遅れるぶん Ctrl を離した後にホイールが出ることがあり、
+このビットが立ちません。`agent_emit_zoom()` は Ctrl 押下・ホイール・Ctrl 離上の
+3 つを **1 回の `SendInput`** にまとめ、入力の並びごと固定しています。
+`tools\test_zoom.ps1` は、自前の最前面ウィンドウに届いた `MK_CONTROL` を
+数えてこれを確かめます(実測: 注入からアプリに届くまで 13〜54ms、Ctrl の残留なし)。
+
 ### 4. 入れ子のモーダルループで PostQuitMessage を呼ばない
 
 キー記録ウィンドウ（`capture.c`）は自前のモーダルループを持ちます。その中の
@@ -303,9 +313,9 @@ VK を `GetAsyncKeyState` で走査しており、Python のオーバーヘッ�
 
 | `RepressGapMs` | 2 回目以降の遅れ |
 |---|---|
-| 120（既定） | 約 127ms |
+| 120 | 約 127ms |
 | 80 | 約 96ms |
-| 40 | 約 49ms |
+| 40（既定） | 約 49ms |
 | 20 | 約 34ms |
 
 **20ms を選んでも 34ms かかる。** 待ちは `SetTimer` で測っており、その分解能が
@@ -636,6 +646,7 @@ powershell -ExecutionPolicy Bypass -File tools\stress.ps1
 | `tools\dpifont.c` | 表示スケールを変えたときのフォントの追従（`-watch` で観察） |
 | `tools\test_autoscroll.ps1` | オートスクロール（食べ・凍結・ホイール化・復帰）と中クリック差し替え |
 | `tools\test_exclude.ps1` | 停止する条件（ウィンドウ名の一致・名前変更への追随・一覧からの追加） |
+| `tools\test_zoom.ps1` | ズーム（Ctrl+ホイール）が `MK_CONTROL` 付きでアプリに届くか・遅れ |
 | `tools\shot_settings.ps1` | 設定画面のキャプチャ（目視確認用） |
 
 ### テストを書くときの落とし穴

@@ -14,7 +14,7 @@
 #include <windows.h>
 
 #define MAYOUS_APPNAME      L"Mayous"
-#define MAYOUS_VERSION      L"v19"
+#define MAYOUS_VERSION      L"v20"
 #define MAYOUS_WNDCLASS     L"MayousHiddenWnd"
 #define MAYOUS_AGENT_CLASS  L"MayousWheelAgentWnd"
 #define MAYOUS_MUTEX        L"Local\\MayousSingleInstance_{7A1C4E2B-9D3F-4A55-8C10-2E6B0F9D4A31}"
@@ -27,7 +27,7 @@
 #define WM_MAYOUS_TRAY      (WM_APP + 1)
 #define WM_MAYOUS_SHOWINFO  (WM_APP + 2)
 #define WM_MAYOUS_PUMP      (WM_APP + 3)   /* 注入キューを吐き出せ */
-/* エージェント宛: wParam 0=水平 1=垂直 / lParam = 量(符号付き) */
+/* エージェント宛: wParam 0=水平 1=垂直 2=Ctrl+垂直(ズーム) / lParam = 量(符号付き) */
 #define WM_MAYOUS_AGENT_WHEEL (WM_APP + 4)
 
 /* タイマーID */
@@ -85,6 +85,8 @@ typedef enum {
     ACT_HOLD_KEYS,     /* 同時押しを保っている間ずっと押しっぱなしにする */
     ACT_HWHEEL_LEFT,   /* 水平ホイール左                    */
     ACT_HWHEEL_RIGHT,  /* 水平ホイール右                    */
+    ACT_ZOOM_IN,       /* Ctrl+ホイール上(拡大)             */
+    ACT_ZOOM_OUT,      /* Ctrl+ホイール下(縮小)             */
     ACT_CLICK,         /* 別のマウスボタンを 1 回出す(Action.btn) */
     ACT_AUTOSCROLL,    /* 押して離すとスクロール・モードに入る    */
     ACT_PASSTHRU       /* 単独クリック用: 何も変えずそのまま */
@@ -146,7 +148,7 @@ typedef struct {
    してある。押し直す先が別のキーなら間は空けない(chord.c の hold_begin)。
    選べるのは下の 4 段階だけ。ini に他の値が書かれていたら一番近いものへ丸める。 */
 #define REPRESS_GAP_STEPS      4
-#define REPRESS_GAP_MS_DEFAULT 120
+#define REPRESS_GAP_MS_DEFAULT 40
 extern const int kRepressGapMs[REPRESS_GAP_STEPS];   /* 120 / 80 / 40 / 20 */
 
 /* オートスクロールの速さ。100% のとき、マウスを AUTOSCROLL_PX_PER_NOTCH だけ
@@ -220,6 +222,7 @@ void  chord_reset(void);
 int   agent_main(HINSTANCE inst, DWORD parentPid);
 void  agent_ensure(void);
 void  agent_send_wheel(int amount, BOOL horizontal);
+void  agent_send_zoom(int amount);   /* Ctrl を挟んだ縦ホイール(拡大・縮小) */
 void  agent_stop(void);
 
 /* settings.c - 設定ウィンドウ */
