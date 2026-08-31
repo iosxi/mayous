@@ -28,6 +28,7 @@ SuspendOnFullscreen=0
 [Chords]
 RightThenLeft=appcmd:back
 RightThenRight=none
+RightThenMiddle=appcmd:refresh
 Side1ThenLeft=appcmd:forward
 [Single]
 Side1Alone=none
@@ -54,6 +55,7 @@ public static class S2 {
     }
     public static void LDown(){One(0x0002,0);}  public static void LUp(){One(0x0004,0);}
     public static void RDown(){One(0x0008,0);}  public static void RUp(){One(0x0010,0);}
+    public static void MDown(){One(0x0020,0);}  public static void MUp(){One(0x0040,0);}
     public static void X1Down(){One(0x0080,1);} public static void X1Up(){One(0x0100,1);}
     /* WM_APPCOMMAND の宛先は「前面ウィンドウ」なので、測る前に的を前面へ出す。
        前面を譲る側(この PowerShell)から呼ぶぶんには Windows も許してくれる。 */
@@ -82,6 +84,9 @@ Write-Host '  T1 右クリック + 左クリック   -> APPCOMMAND cmd=1 (戻る
 
 Write-Host '  T2 サイド1 + 左クリック      -> APPCOMMAND cmd=2 (進む)'
 [S2]::X1Down(); W 80; [S2]::LDown(); W 60; [S2]::LUp(); W 120; [S2]::X1Up(); W 700
+
+Write-Host '  T3 右クリック + 中クリック   -> APPCOMMAND cmd=3 (更新)'
+[S2]::RDown(); W 80; [S2]::MDown(); W 60; [S2]::MUp(); W 120; [S2]::RUp(); W 700
 
 Start-Process (Join-Path $test 'mayous.exe') -ArgumentList '--exit' -Wait
 W 600
@@ -113,6 +118,7 @@ Write-Host ''
 Write-Host '===== 判定 ====='
 Check ([bool]($tl -match 'APPCOMMAND cmd=1')) '戻る が WM_APPCOMMAND として届いた'
 Check ([bool]($tl -match 'APPCOMMAND cmd=2')) '進む が WM_APPCOMMAND として届いた'
+Check ([bool]($tl -match 'APPCOMMAND cmd=3')) '更新 が WM_APPCOMMAND として届いた'
 Check (-not $keys)                            'キーは 1 つも流れていない'
 
 if ($ok) { Write-Host ''; Write-Host '全部通った。' }
