@@ -76,6 +76,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_CONTEXTMENU:   logline("CONTEXTMENU");      return 0;
 
+    /* アプリ・コマンド。マウスの戻るボタンや mayous の appcmd: が届く。
+       cmd はコマンド番号 (1=戻る 2=進む)、dev は発生源 (0x8000=マウス)。 */
+    case WM_APPCOMMAND:
+        logline("APPCOMMAND cmd=%d dev=%04X",
+                GET_APPCOMMAND_LPARAM(lp), (unsigned)GET_DEVICE_LPARAM(lp));
+        return TRUE;
+
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC dc = BeginPaint(hwnd, &ps);

@@ -546,6 +546,42 @@ NULL なら未完成）。作り直しが二重に走ると、コントロール
 | 無効化・除外アプリ・フルスクリーン | `chord_sanity()` |
 | 設定の再読み込み・終了・デスクトップ切替 | `chord_flush()` |
 
+### 13. 「戻る」はキーで頼むものではない
+
+矢印キーを自前で拾っているページ（ビューアや漫画サイト）では、`alt+left` を
+注入しても戻らない。ページの `keydown` ハンドラが先に食べてしまうからで、
+こちらがどれだけ正しくキーを送っても結果は変わらない。
+
+そもそも**マウスの「戻るボタン」はキーを送っていない**。Windows が送るのは
+`WM_APPCOMMAND` という 1 通のウィンドウメッセージで、キー入力の流れには
+一切乗らない。だから JavaScript からは見えず、`preventDefault()` の
+対象にもならない。`ACT_APPCMD` はこれを直接投げる（`chord.c` の
+`emit_appcmd()`、設定では `appcmd:back`）。
+
+`lParam` の上位ワードに「コマンド番号 | 発生源」を入れる。発生源は
+`FAPPCOMMAND_MOUSE` にして、本物の戻るボタンに合わせてある。
+
+実測（`tools\appcmd.c` と `tools\test_appcmd.ps1`）:
+
+| 相手 | 結果 |
+|---|---|
+| Chrome（矢印キーを握るページ） | 戻る・進む とも成功。戻り値 1（= 処理した） |
+| Firefox | 同上 |
+| 自前の `target.exe` | `APPCOMMAND cmd=1 dev=8000` が届く。**キーは 1 本も流れない** |
+| 前面でないウィンドウへ直接送った場合 | 効く（フォーカスは要らない） |
+
+**`SendMessage` を使ってはいけない。** ここはフックを保持しているスレッドで、
+相手の応答を待つ形にすると、相手が重いあいだ丸ごと待たされ
+`LowLevelHooksTimeout` に引っかかる（罠 1 と同じ壊れ方）。
+`SendNotifyMessage` なら即座に戻り、かつ相手には「送られた」メッセージとして
+届く。`PostMessage` でも Chrome / Firefox とも効いたが、本物の
+`WM_APPCOMMAND` は送信メッセージなので、そちらに揃えた。
+
+宛先は**前面ウィンドウのトップレベル**（`GetForegroundWindow` →
+`GA_ROOT`）。カーソル下のウィンドウにする案もあったが、`ctrl+w` のような
+キーの割り当てが効く先と揃えないと、同じ設定画面に並んでいるのに片方だけ
+別のウィンドウに効く、という説明しづらい挙動になる。
+
 ---
 
 ## レジストリを使わない実装
@@ -647,6 +683,8 @@ powershell -ExecutionPolicy Bypass -File tools\stress.ps1
 | `tools\test_autoscroll.ps1` | オートスクロール（食べ・凍結・ホイール化・復帰）と中クリック差し替え |
 | `tools\test_exclude.ps1` | 停止する条件（ウィンドウ名の一致・名前変更への追随・一覧からの追加） |
 | `tools\test_zoom.ps1` | ズーム（Ctrl+ホイール）が `MK_CONTROL` 付きでアプリに届くか・遅れ |
+| `tools\test_appcmd.ps1` | `appcmd:back` が `WM_APPCOMMAND` で届き、キーが流れないこと |
+| `tools\appcmd.c` | 「戻る」の 4 つの出し方（メッセージ / VK / Alt+Left / サイドボタン）の比較 |
 | `tools\shot_settings.ps1` | 設定画面のキャプチャ（目視確認用） |
 
 ### テストを書くときの落とし穴

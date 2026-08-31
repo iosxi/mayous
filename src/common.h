@@ -14,7 +14,7 @@
 #include <windows.h>
 
 #define MAYOUS_APPNAME      L"Mayous"
-#define MAYOUS_VERSION      L"v20"
+#define MAYOUS_VERSION      L"v21"
 #define MAYOUS_WNDCLASS     L"MayousHiddenWnd"
 #define MAYOUS_AGENT_CLASS  L"MayousWheelAgentWnd"
 #define MAYOUS_MUTEX        L"Local\\MayousSingleInstance_{7A1C4E2B-9D3F-4A55-8C10-2E6B0F9D4A31}"
@@ -89,6 +89,7 @@ typedef enum {
     ACT_ZOOM_OUT,      /* Ctrl+ホイール下(縮小)             */
     ACT_CLICK,         /* 別のマウスボタンを 1 回出す(Action.btn) */
     ACT_AUTOSCROLL,    /* 押して離すとスクロール・モードに入る    */
+    ACT_APPCMD,        /* アプリ・コマンドを直接投げる(Action.appcmd) */
     ACT_PASSTHRU       /* 単独クリック用: 何も変えずそのまま */
 } ActionKind;
 
@@ -103,6 +104,7 @@ typedef struct {
     KeyStep    steps[MAX_ACTION_STEPS];
     int        nsteps;
     int        btn;                     /* ACT_CLICK のときのボタン添字 */
+    int        appcmd;                  /* ACT_APPCMD のときの APPCOMMAND_* */
     WCHAR      spec[ACTION_SPEC_CCH];   /* 元の設定文字列(表示・保存用) */
 } Action;
 

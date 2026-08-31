@@ -97,6 +97,10 @@ static const Preset kPresets[] = {
     { L"F15",                               L"f15" },
 
     { L"── ブラウザ・タブ ──",              NULL },
+    /* 「ブラウザーバック」はキー入力を通らないので、矢印キーを握っている
+       ページ(Alt+Left が効かないサイト)でも止められない。既定はこちら。 */
+    { L"戻る (ブラウザーバック)",           L"appcmd:back" },
+    { L"進む (ブラウザーフォワード)",       L"appcmd:forward" },
     { L"戻る (Alt+Left)",                   L"alt+left" },
     { L"進む (Alt+Right)",                  L"alt+right" },
     { L"更新 (F5)",                         L"f5" },

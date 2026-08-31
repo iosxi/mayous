@@ -155,7 +155,7 @@ static const DWORD kXData[BTN_COUNT] = { 0, 0, 0, XBUTTON1, XBUTTON2 };
  * ================================================================== */
 
 enum { Q_CLICK, Q_DOWN, Q_UP, Q_KEYS, Q_HWHEEL, Q_VWHEEL, Q_ZOOM, Q_DRAG_START,
-       Q_HOLD_DOWN, Q_HOLD_UP, Q_MARK_ON, Q_MARK_OFF };
+       Q_HOLD_DOWN, Q_HOLD_UP, Q_MARK_ON, Q_MARK_OFF, Q_APPCMD };
 
 typedef struct {
     BYTE    kind;
@@ -409,6 +409,44 @@ static void emit_click(int btn)
     SendInput(2, in, sizeof(INPUT));
 }
 
+/* ==================================================================
+ *  アプリ・コマンド (WM_APPCOMMAND)
+ *
+ *  「ブラウザの戻る」は、本来キーで頼むものではない。マウスの戻るボタンを
+ *  押したとき Windows が送るのは WM_APPCOMMAND という 1 通のメッセージで、
+ *  キー入力の流れには一切乗らない。だから Alt+Left のように、ページ側の
+ *  キーハンドラ(矢印キーを握っているサイトなど)に食われることがない。
+ *  実測 (toolsppcmd.c):
+ *      Chrome  / pixiv        戻る・進む とも成功 (戻り値 1 = 処理した)
+ *      Firefox                同上
+ *  ページの JavaScript には見えないので、preventDefault では止められない。
+ *
+ *  【SendMessage を使ってはいけない】
+ *  ここはフックを保持しているスレッドである。相手の応答を待つ形で送ると、
+ *  相手が重いあいだ丸ごと待たされ、LowLevelHooksTimeout に引っかかって
+ *  フックを見限られる(SendInput をフック内で呼んだときと同じ壊れ方)。
+ *  SendNotifyMessage なら即座に戻り、かつ相手には「送られた」メッセージ
+ *  として届く。PostMessage でも両ブラウザとも効いたが、本物の
+ *  WM_APPCOMMAND は送信メッセージなので、そちらに揃えてある。
+ *
+ *  宛先は前面ウィンドウのトップレベル。Ctrl+W などのキーの割り当てが
+ *  効く先と同じにしておかないと、同じ設定画面で並んでいるのに片方だけ
+ *  別のウィンドウに効く、という分かりにくい挙動になる。
+ * ================================================================== */
+static void emit_appcmd(int cmd)
+{
+    HWND h = GetForegroundWindow(), root;
+
+    if (!h) return;
+    root = GetAncestor(h, GA_ROOT);
+    if (root) h = root;
+
+    /* lParam: 上位ワードに「コマンド | 発生源」。マウスの戻るボタンに合わせる。 */
+    SendNotifyMessageW(h, WM_APPCOMMAND, (WPARAM)h,
+                       (LPARAM)MAKELONG(0, (WORD)(cmd | FAPPCOMMAND_MOUSE)));
+    DBG("appcmd: cmd=%d -> hwnd=%p", cmd, (void *)h);
+}
+
 /* キューを吐き出す。メッセージループからのみ呼ぶこと。 */
 void chord_pump(void)
 {
@@ -432,6 +470,7 @@ void chord_pump(void)
             break;
         case Q_VWHEEL:  agent_send_wheel(it.amount, FALSE); break;
         case Q_ZOOM:    agent_send_zoom(it.amount);         break;
+        case Q_APPCMD:  emit_appcmd(it.amount);             break;
         case Q_MARK_ON: overlay_show(it.to);                break;
         case Q_MARK_OFF: overlay_hide();                    break;
         }
@@ -445,6 +484,7 @@ static void inject_click(int btn)             { q_push(Q_CLICK, btn, 0, NULL); }
 static void inject_hwheel(int amount)         { q_push(Q_HWHEEL, 0, amount, NULL); }
 static void inject_vwheel(int amount)         { q_push(Q_VWHEEL, 0, amount, NULL); }
 static void inject_zoom(int amount)           { q_push(Q_ZOOM, 0, amount, NULL); }
+static void inject_appcmd(int cmd)            { q_push(Q_APPCMD, 0, cmd, NULL); }
 static void inject_keys(const Action *a)      { q_push(Q_KEYS, 0, 0, a); }
 
 /* ================================================================== */
@@ -750,6 +790,7 @@ static void fire_action(const Action *a, int wheelAmount, int pfx)
     case ACT_ZOOM_IN:      inject_zoom(+(wheelAmount ? wheelAmount : WHEEL_DELTA)); break;
     case ACT_ZOOM_OUT:     inject_zoom(-(wheelAmount ? wheelAmount : WHEEL_DELTA)); break;
     case ACT_CLICK:        inject_click(a->btn);         break;
+    case ACT_APPCMD:       inject_appcmd(a->appcmd);     break;
     case ACT_AUTOSCROLL: {
         POINT p;
         GetCursorPos(&p);              /* 読むだけ。注入はしないので安全 */

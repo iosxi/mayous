@@ -7,6 +7,7 @@
  *      zoom_in / zoom_out         Ctrl+ホイール(拡大・縮小)
  *      click:middle               別のマウスボタンを 1 回出す(middleclick も可)
  *      autoscroll                 押して離すとスクロール・モードに入る
+ *      appcmd:back                アプリ・コマンド。キーを経由せず「戻る」を頼む
  *      win / alttab / alttab_back よく使うものの別名
  *      ctrl+alt+t                 1ステップのキーコンボ
  *      ctrl+c, ctrl+v             複数ステップ(記録したものの再生)
@@ -203,6 +204,35 @@ BOOL cfg_parse_action(const WCHAR *src, Action *a)
     if (!wcscmp(buf, L"zoom_in")  || !wcscmp(buf, L"zoomin"))  { a->kind = ACT_ZOOM_IN;  return TRUE; }
     if (!wcscmp(buf, L"zoom_out") || !wcscmp(buf, L"zoomout")) { a->kind = ACT_ZOOM_OUT; return TRUE; }
     if (!wcscmp(buf, L"autoscroll")) { a->kind = ACT_AUTOSCROLL; return TRUE; }
+    {   /* アプリ・コマンド。キー入力を一切通らずに「戻る」などを頼む。
+           矢印キーを握っているページでも Alt+Left のように潰されない。
+           番号での指定(appcmd:7)も受ける。他のコマンドは MSDN の APPCOMMAND_* 参照。 */
+        static const struct { const WCHAR *name; int cmd; } kAppCmd[] = {
+            { L"back",      APPCOMMAND_BROWSER_BACKWARD },
+            { L"forward",   APPCOMMAND_BROWSER_FORWARD  },
+            { L"refresh",   APPCOMMAND_BROWSER_REFRESH  },
+            { L"stop",      APPCOMMAND_BROWSER_STOP     },
+            { L"home",      APPCOMMAND_BROWSER_HOME     },
+            { L"search",    APPCOMMAND_BROWSER_SEARCH   },
+            { L"favorites", APPCOMMAND_BROWSER_FAVORITES },
+        };
+        if (!wcsncmp(buf, L"appcmd:", 7)) {
+            const WCHAR *arg = buf + 7;
+            size_t i;
+            for (i = 0; i < ARRAYSIZE(kAppCmd); ++i)
+                if (!wcscmp(arg, kAppCmd[i].name)) {
+                    a->kind   = ACT_APPCMD;
+                    a->appcmd = kAppCmd[i].cmd;
+                    return TRUE;
+                }
+            if (*arg >= L'1' && *arg <= L'9') {
+                int v = _wtoi(arg);
+                if (v > 0 && v <= 0x0FFF) { a->kind = ACT_APPCMD; a->appcmd = v; return TRUE; }
+            }
+            a->kind = ACT_NONE;
+            return FALSE;
+        }
+    }
     {   /* 別のマウスボタンを出す。"click:middle" と "middleclick" のどちらでも。 */
         static const struct { const WCHAR *name; int btn; } kClick[] = {
             { L"left", BTN_L }, { L"right", BTN_R }, { L"middle", BTN_M },
