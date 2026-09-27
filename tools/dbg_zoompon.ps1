@@ -22,8 +22,8 @@ $build = Join-Path $root 'build'
 $zdir  = Join-Path $build 'zp'
 if (Test-Path $zdir) { Remove-Item $zdir -Recurse -Force }
 New-Item -ItemType Directory -Path $zdir | Out-Null
-Copy-Item 'c:\projects\zoom-pon\dist\zoom-pon.exe' $zdir
-Copy-Item 'c:\projects\zoom-pon\dist\config.json'  $zdir
+Copy-Item 'c:\projects\windows\zoom-pon\dist\zoom-pon.exe' $zdir
+Copy-Item 'c:\projects\windows\zoom-pon\dist\config.json'  $zdir
 
 $zp = Start-Process (Join-Path $zdir 'zoom-pon.exe') -PassThru
 Start-Sleep -Seconds 4

@@ -73,7 +73,7 @@ Write-Host 'OK で保存します...'
 [UI]::Post($sw, 0x0111, [IntPtr]1130, [IntPtr]0) | Out-Null   # IDC_OK
 Start-Sleep -Seconds 2
 
-$ini = 'c:\projects\mayous\build\dist\mayous.ini'
+$ini = 'c:\projects\windows\mayous\build\dist\mayous.ini'
 Write-Host '--- ini の [Chords] ---'
 (Get-Content $ini) | Where-Object { $_ -match '^Side1Then' } | ForEach-Object { Write-Host ('    ' + $_) }
 Write-Host ("mayous 生存: {0}" -f ((Get-MayousProc) -ne $null))

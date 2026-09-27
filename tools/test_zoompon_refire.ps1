@@ -11,7 +11,7 @@ $ErrorActionPreference = 'Stop'
 
 $root  = Split-Path -Parent $PSScriptRoot
 $build = Join-Path $root 'build'
-$zsrc  = 'c:\projects\zoom-pon\dist'
+$zsrc  = 'c:\projects\windows\zoom-pon\dist'
 $zdir  = Join-Path $build 'zp'
 $mdir  = Join-Path $build 'zpmayous'
 

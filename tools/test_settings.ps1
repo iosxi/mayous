@@ -29,7 +29,7 @@ function Find-Wnd([uint32]$procId, [string]$cls) {
   return $script:hit
 }
 
-$ini = 'c:\projects\mayous\build\dist\mayous.ini'
+$ini = 'c:\projects\windows\mayous\build\dist\mayous.ini'
 $proc = Get-Process mayous | Where-Object {
     (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine -notmatch 'wheel-agent' } | Select-Object -First 1
 if (-not $proc) { throw 'mayous が起動していません。' }
