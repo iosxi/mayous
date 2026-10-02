@@ -14,7 +14,7 @@
 #include <windows.h>
 
 #define MAYOUS_APPNAME      L"Mayous"
-#define MAYOUS_VERSION      L"v22"
+#define MAYOUS_VERSION      L"v23"
 #define MAYOUS_WNDCLASS     L"MayousHiddenWnd"
 #define MAYOUS_AGENT_CLASS  L"MayousWheelAgentWnd"
 #define MAYOUS_MUTEX        L"Local\\MayousSingleInstance_{7A1C4E2B-9D3F-4A55-8C10-2E6B0F9D4A31}"
@@ -160,6 +160,15 @@ extern const int kRepressGapMs[REPRESS_GAP_STEPS];   /* 120 / 80 / 40 / 20 */
 #define AUTOSCROLL_SPEED_MAX     500
 #define AUTOSCROLL_PX_PER_NOTCH   12
 
+/* 押しっぱなしの自動解除(左右クリック)。
+   他のツールのフックに離上を食べられると、OS の上ではボタンが押されたまま
+   残り、どの画面でも左クリックが効かなくなる(実測: GetAsyncKeyState が
+   押下のまま戻らない)。OS の上で押されたままの状態がこの秒数続き、かつ
+   物理的には離されているなら、離上を注入して戻す。0 = 無効。 */
+#define STUCK_RELEASE_SEC_DEFAULT 20
+#define STUCK_RELEASE_SEC_MIN      2
+#define STUCK_RELEASE_SEC_MAX    600
+
 typedef struct {
     BOOL   enabled;
     int    dragThreshold;              /* px, 0 = システム値(SM_CXDRAG)を使う */
@@ -168,6 +177,7 @@ typedef struct {
     int    keyHoldMs;                  /* 注入したキーを押しておく時間(ms) */
     int    repressGapMs;               /* 同じキーを押し直すまで空ける時間(ms) */
     int    autoScrollSpeed;            /* オートスクロールの速さ(%) */
+    int    stuckReleaseSec;            /* 押しっぱなしの自動解除(秒)。0 = 無効 */
     ThemeMode theme;                   /* 設定画面の配色 */
     Action chord[CH_COUNT];
     Action single[BTN_COUNT];          /* 単独クリックの置き換え(サイドボタン用) */
@@ -204,6 +214,7 @@ const WCHAR *cfg_btn_name(int btn);        /* "左クリック" など       */
 const WCHAR *cfg_suf_name(int suf);        /* "ホイール上" など       */
 const WCHAR *cfg_hold_ini_key(int btn);    /* 長押し判定の ini キー   */
 int   cfg_repress_gap_snap(int ms);        /* 一番近い段階の値へ丸める */
+int   cfg_stuck_release_clamp(int sec);    /* 0 はそのまま、他は範囲に収める */
 
 /* chord.c */
 void  chord_init(HWND hwnd);

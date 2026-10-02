@@ -891,6 +891,69 @@ static void reap_lost(void)
             g_swallowUp[i] = FALSE;
 }
 
+/* ==================================================================
+ *  押しっぱなしの自動解除 (左右クリック)
+ *
+ *  reap_lost() が回収するのは mayous 自身が抱えている保留だけ。こちらは
+ *  OS の上でボタンが押されたまま残った場合の救済である。
+ *
+ *  他のツールのフックに離上を食べられると、押下だけが OS に記録されて
+ *  離上が来ない。するとボタンは押されたままになり、どの画面でも左クリックが
+ *  効かなくなる。実測(eater.exe に左の離上を 1 回食べさせる):
+ *      押下後                     GetAsyncKeyState = 押下
+ *      離上(食べられた) 2 秒後    GetAsyncKeyState = 押下   <- 戻らない
+ *      MAYOUS_TAG 付きの離上注入  GetAsyncKeyState = 離上   アプリにも UP が届く
+ *
+ *  【押し続けているのか、取り残されたのかは Raw Input で見分ける】
+ *  OS の状態だけを見て N 秒で離すと、長いドラッグを本当にしている最中に
+ *  手を離されることになる。Raw Input は他のフックの握り潰しに関係なく届く
+ *  ので、「OS の上では押されている」のに「物理的には離されている」なら
+ *  取り残しと断定できる。物理的に押しているあいだは何秒経っても触らない。
+ *
+ *  秒数は「OS の上で押され始めてから」数える。取り残されたあと利用者が
+ *  何度クリックし直しても(押下は OS に重ねて記録されるだけで、離上は
+ *  また食べられる)時計が巻き戻らないようにするため。
+ *
+ *  mayous が抱えているボタン(保留・同時押し・注入済み)は従来の経路が
+ *  面倒を見るので、ここでは触らない。
+ *  除外アプリが前面にいるあいだも働かせる。横取りしているアプリこそ
+ *  除外されていることが多いからである。トレイで「有効」を外したときだけは
+ *  何もしない(利用者が mayous を止めたつもりの場面で入力を出さない)。
+ * ================================================================== */
+
+static ULONGLONG g_heldSince[BTN_COUNT];   /* OS の上で押され始めた時刻。0 = 離れている */
+
+static void release_stuck(ULONGLONG now)
+{
+    static const int kWatch[] = { BTN_L, BTN_R };
+    int k;
+
+    for (k = 0; k < (int)ARRAYSIZE(kWatch); ++k) {
+        int  b    = kWatch[k];
+        BOOL held = (GetAsyncKeyState(kVk[b]) & 0x8000) != 0;
+        BOOL physUp;
+
+        if (!held || g_cfg.stuckReleaseSec <= 0 || !g_cfg.enabled ||
+            g_pfx[b].st != PS_IDLE) {
+            g_heldSince[b] = 0;
+            continue;
+        }
+        if (!g_heldSince[b]) g_heldSince[b] = now;
+        if (now - g_heldSince[b] < (ULONGLONG)g_cfg.stuckReleaseSec * 1000) continue;
+
+        /* Raw Input を登録できなかった場合は見分けようがないので、
+           指定どおり秒数だけで判断する。 */
+        physUp = g_rawOn ? (!g_physDown[b] && now - g_physUpT[b] >= RAW_LOST_MS) : TRUE;
+        if (!physUp) continue;
+
+        DBG("stuck: btn[%d] が %llu ms 押されたまま。物理的には離れている -> 離上を注入",
+            b, (unsigned long long)(now - g_heldSince[b]));
+        inject_button(b, FALSE);
+        /* 注入した離上まで食べられた場合に、毎秒撃ち続けないよう時計を戻す */
+        g_heldSince[b] = now;
+    }
+}
+
 /* 設定変更後に呼ぶ。どのボタンを乗っ取る必要があるかを再計算する。
    割り当てが全部 none のボタンには一切手を触れない = 副作用ゼロ。 */
 void chord_recompute(void)
@@ -1000,6 +1063,7 @@ void chord_sanity(void)
     int i;
 
     reap_lost();        /* まずは取りこぼした離上を回収する */
+    release_stuck(now); /* OS の上で押されたまま残ったボタンを戻す */
 
     /* 無効化された(除外アプリが前面に来た・フルスクリーン・停止)のに
        スクロール・モードのままだと、カーソルが凍ったまま抜け道が

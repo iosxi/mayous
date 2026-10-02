@@ -478,6 +478,16 @@ int cfg_repress_gap_snap(int ms)
     return kRepressGapMs[best];
 }
 
+/* 0 は「無効」としてそのまま通す。それ以外は範囲に収める。
+   短すぎると、取りこぼしと見分ける前に OS の状態を書き換えかねない。 */
+int cfg_stuck_release_clamp(int sec)
+{
+    if (sec <= 0) return 0;
+    if (sec < STUCK_RELEASE_SEC_MIN) return STUCK_RELEASE_SEC_MIN;
+    if (sec > STUCK_RELEASE_SEC_MAX) return STUCK_RELEASE_SEC_MAX;
+    return sec;
+}
+
 void cfg_single_ini_key(int btn, WCHAR *out, int cch)
 {
     lstrcpynW(out, kBtnIni[btn], cch);
@@ -591,6 +601,12 @@ L"; 離した瞬間が見えず、2 回目以降が無かったことになる�
 L"; そのまま体感の遅れになるので、相手に合わせて選ぶ。\r\n"
 L"; 押し直す先が別のキー(ホイール上下に別々のキーなど)なら間は空けない。\r\n"
 L"RepressGapMs=40\r\n"
+L"\r\n"
+L"; 押しっぱなしの自動解除(秒)。左右クリックが Windows の上で押されたままになり、\r\n"
+L"; かつ実際には指を離している状態がこの秒数続いたら、離したことにして戻す。\r\n"
+L"; 他のツールに離上を横取りされて、どの画面でもクリックが効かなくなったときの救済。\r\n"
+L"; 本当に押し続けている間は解除しない。0 = 無効。2〜600。\r\n"
+L"StuckReleaseSec=20\r\n"
 L"\r\n"
 L"; フルスクリーンのアプリが前面のあいだは自動で停止する(ゲーム対策)\r\n"
 L"SuspendOnFullscreen=1\r\n"
@@ -709,6 +725,8 @@ void cfg_load(void)
                                                       AUTOSCROLL_SPEED_DEFAULT, g_cfg.iniPath);
     if (g_cfg.autoScrollSpeed < AUTOSCROLL_SPEED_MIN) g_cfg.autoScrollSpeed = AUTOSCROLL_SPEED_MIN;
     if (g_cfg.autoScrollSpeed > AUTOSCROLL_SPEED_MAX) g_cfg.autoScrollSpeed = AUTOSCROLL_SPEED_MAX;
+    g_cfg.stuckReleaseSec     = cfg_stuck_release_clamp(
+        GetPrivateProfileIntW(L"General", L"StuckReleaseSec", STUCK_RELEASE_SEC_DEFAULT, g_cfg.iniPath));
 
     {   /* 設定画面の配色: system / light / dark */
         WCHAR t[32];

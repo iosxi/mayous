@@ -37,6 +37,7 @@
 #define IDC_SREC_BASE    2210            /* +btn */
 #define IDC_KEYTRIG_BASE 2300            /* +btn*REGKEY_COUNT+枠 登録キーのキー */
 #define IDC_SCROLLSPEED  1150            /* オートスクロールの速さ(%) */
+#define IDC_STUCK        1151            /* 押しっぱなしの自動解除(秒) */
 #define IDC_FULLSCREEN   1102
 #define IDC_HOLD_BASE    1110            /* +btn */
 #define IDC_DRAG         1119
@@ -425,6 +426,7 @@ static void load_values(void)
         if (g_hHold[b]) SetDlgItemInt(g_wnd, IDC_HOLD_BASE + b, (UINT)g_cfg.holdTimeoutMs[b], FALSE);
     SetDlgItemInt(g_wnd, IDC_DRAG, (UINT)g_cfg.dragThreshold, FALSE);
     SetDlgItemInt(g_wnd, IDC_SCROLLSPEED, (UINT)g_cfg.autoScrollSpeed, FALSE);
+    SetDlgItemInt(g_wnd, IDC_STUCK, (UINT)g_cfg.stuckReleaseSec, FALSE);
 
     for (b = 0; b < REPRESS_GAP_STEPS; ++b)
         CheckDlgButton(g_wnd, IDC_GAP_BASE + b,
@@ -535,6 +537,8 @@ static BOOL save_values(void)
         if (sp > AUTOSCROLL_SPEED_MAX) sp = AUTOSCROLL_SPEED_MAX;
         cfg_write_int(L"General", L"AutoScrollSpeed", sp);
     }
+    cfg_write_int(L"General", L"StuckReleaseSec",
+                  cfg_stuck_release_clamp((int)GetDlgItemInt(g_wnd, IDC_STUCK, &ok, FALSE)));
 
     for (b = 0; b < REPRESS_GAP_STEPS; ++b)
         if (IsDlgButtonChecked(g_wnd, IDC_GAP_BASE + b) == BST_CHECKED) {
@@ -584,9 +588,9 @@ static BOOL save_values(void)
                    EXC_HINT * EXC_HINTN + EXC_GAP + \
                    EXC_HDR + EXC_LIST + EXC_REF + 8)
 #define TAB_H     (TAB_H_ROW > TAB_H_EXC ? TAB_H_ROW : TAB_H_EXC)
-/* 動作: 上余白22 + 長押し2行(26*2) + 距離1行(26)
+/* 動作: 上余白22 + 長押し2行(26*2) + 距離1行(26) + 押しっぱなし解除1行(26)
         + 押し直し1行(26) + その説明1行(22) + 下余白10 */
-#define GRP2_H    (22 + 26 * 4 + 22 + 10)
+#define GRP2_H    (22 + 26 * 5 + 22 + 10)
 
 static void add_row(HWND hwnd, const WCHAR *label, int y,
                     HWND *lbl, HWND *cmb, HWND *rec,
@@ -897,6 +901,15 @@ static void build(HWND hwnd)
     g_hDrag = mk(hwnd, L"EDIT", L"", ES_NUMBER | ES_RIGHT | WS_BORDER | WS_TABSTOP,
                  m + 14 + 152, y, 48, 22, IDC_DRAG);
     mk(hwnd, L"STATIC", L"px    (長押し・距離とも 0 で 無効 / 自動)", SS_LEFT,
+       m + 14 + 204, y + 4, 270, 20, 0);
+    y += ROW_H;
+
+    /* 他のツールに離上を横取りされて、左右クリックが押されたまま残ったときの救済。
+       本当に押し続けている間は解除しない(chord.c の release_stuck)。 */
+    mk(hwnd, L"STATIC", L"押しっぱなしの自動解除", SS_LEFT, m + 14, y + 4, 148, 20, 0);
+    mk(hwnd, L"EDIT", L"", ES_NUMBER | ES_RIGHT | WS_BORDER | WS_TABSTOP,
+       m + 14 + 152, y, 48, 22, IDC_STUCK);
+    mk(hwnd, L"STATIC", L"秒    (左右クリック。0 で 無効)", SS_LEFT,
        m + 14 + 204, y + 4, 270, 20, 0);
     y += ROW_H;
 
